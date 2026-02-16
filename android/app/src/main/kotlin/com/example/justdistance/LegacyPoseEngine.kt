@@ -54,6 +54,8 @@ class LegacyPoseEngine : MeasurementEngine {
             ballGroundPlaneExtentX = null,
             ballGroundPlaneExtentZ = null,
             ballCupPlaneAngleDeg = null,
+            liveRawMeters = null,
+            centerHitValid = null,
             multiRayGridHalfSpanPx = null,
             multiRayStepPx = null,
             validSampleCount = null,

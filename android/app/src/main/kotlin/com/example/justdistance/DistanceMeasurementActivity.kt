@@ -121,6 +121,9 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     // 마지막 측정값(항상 meters 기준) - 단위 변경 시 즉시 재표시용
     private var lastDistanceMeters: Float = 0f
     private var lastNonFinalDistanceMeters: Float = 0f
+    private var lastNonFinalLiveSource: String? = null
+    private var lastNonFinalLiveRawMeters: Float? = null
+    private var lastNonFinalCenterHitValid: Boolean? = null
 
     // GREENIQ feedback: lock stats (captured at flashLock)
     private var ballValidHits: Int? = null
@@ -900,6 +903,9 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         // Keep a copy of the last non-final distance for logging (live_at_finish)
         if (ui.engineState != V31StateMachine.State.RESULT) {
             lastNonFinalDistanceMeters = ui.distanceMeters
+            lastNonFinalLiveSource = ui.liveSource
+            lastNonFinalLiveRawMeters = ui.liveRawMeters
+            lastNonFinalCenterHitValid = ui.centerHitValid
         }
         lastDistanceMeters = ui.distanceMeters
         // Golf UI: LIVE(1 decimal) vs FINAL(2 decimals)
@@ -1114,6 +1120,9 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             cupMedianY = null
             cupCenterYOffsetApplied = null
             lastNonFinalDistanceMeters = 0f
+            lastNonFinalLiveSource = null
+            lastNonFinalLiveRawMeters = null
+            lastNonFinalCenterHitValid = null
         }
 
         val qualityToShow: ViewFinderView.QualityState =
@@ -1597,7 +1606,9 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("},")
 
         sb.append("\"result\":{")
-        sb.append("\"liveSource\":\"").append(escJson(ui.liveSource ?: "null")).append("\",")
+        sb.append("\"liveSource\":\"").append(escJson(lastNonFinalLiveSource ?: (ui.liveSource ?: "null"))).append("\",")
+        sb.append("\"liveRaw_m\":").append(String.format(Locale.US, "%.3f", lastNonFinalLiveRawMeters ?: 0f)).append(",")
+        sb.append("\"centerHitValid\":").append(if (lastNonFinalCenterHitValid == true) "true" else "false").append(",")
         sb.append("\"liveAtFinish_m\":").append(String.format(Locale.US, "%.3f", liveAtFinish)).append(",")
         sb.append("\"finalDistance_m\":").append(String.format(Locale.US, "%.3f", finalMeters)).append(",")
         sb.append("\"ballCupPlaneAngleDeg\":").append(String.format(Locale.US, "%.2f", ballCupPlaneAngleDeg ?: 0f)).append(",")

@@ -186,7 +186,10 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         offsetPercent: Float,
         centerYOffsetRatio: Float,
         gridSize: Int = 5,
-        maxHitDistanceMeters: Float = 12f
+        maxHitDistanceMeters: Float = 12f,
+        yBelowCameraMeters: Float = 0.1f,
+        preferUpwardFacing: Boolean = true,
+        requireUpwardFacing: Boolean = false
     ): Sample {
         val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
         val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
@@ -208,9 +211,9 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val policy =
             PlanePolicy(
                 maxDistanceMeters = maxHitDistanceMeters,
-                preferUpwardFacing = true,
-                requireUpwardFacing = false,
-                yBelowCameraMeters = 0.1f
+                preferUpwardFacing = preferUpwardFacing,
+                requireUpwardFacing = requireUpwardFacing,
+                yBelowCameraMeters = yBelowCameraMeters
             )
 
         val selected = ArrayList<SelectedHit>(gridSize * gridSize)

@@ -120,6 +120,9 @@ class V31StateMachine(
         val ballGroundPlaneExtentZ: Float?,
         // GREENIQ Plane consistency (logged at CUP fix)
         val ballCupPlaneAngleDeg: Float?,
+        // GREENIQ LIVE minimal diagnostics (for 6m rotation issue analysis)
+        val liveRawMeters: Float?,        // raw distance BEFORE smoothing/clamp
+        val centerHitValid: Boolean?,     // true iff LIVE raw was available (intersection or fallback)
         // GREENIQ Cup multi-ray diagnostics (logged on END_LOCKED)
         val multiRayGridHalfSpanPx: Float?,
         val multiRayStepPx: Float?,
@@ -226,6 +229,10 @@ class V31StateMachine(
     private var ballGroundPlaneExtentX: Float? = null
     private var ballGroundPlaneExtentZ: Float? = null
     private var ballCupPlaneAngleDeg: Float? = null
+
+    // LIVE minimal diagnostics (must not affect computation)
+    private var liveRawMeters: Float? = null
+    private var centerHitValid: Boolean? = null
 
     // GREENIQ Cup multi-ray diagnostics (copied from sampler output for logging)
     private var lastMultiRayGridHalfSpanPx: Float? = null
@@ -346,7 +353,10 @@ class V31StateMachine(
                         offsetPercent = CUP_OFFSET_PERCENT_PRIMARY,
                         centerYOffsetRatio = CUP_CENTER_Y_OFFSET_RATIO,
                         gridSize = 5,
-                        maxHitDistanceMeters = 12f
+                        maxHitDistanceMeters = 12f,
+                        yBelowCameraMeters = 0.1f,
+                        preferUpwardFacing = true,
+                        requireUpwardFacing = false
                     )
                 if (s.validHits < 5) {
                     val retry =
@@ -356,7 +366,11 @@ class V31StateMachine(
                             offsetPercent = CUP_OFFSET_PERCENT_RETRY,
                             centerYOffsetRatio = CUP_CENTER_Y_OFFSET_RATIO,
                             gridSize = 5,
-                            maxHitDistanceMeters = 12f
+                            // 2nd pass only: widen distance cap + slightly relax Y filter for hit availability.
+                            maxHitDistanceMeters = 18f,
+                            yBelowCameraMeters = 0.05f,
+                            preferUpwardFacing = true,
+                            requireUpwardFacing = false
                         )
                     if (retry.validHits > s.validHits) s = retry
                 }
@@ -393,6 +407,9 @@ class V31StateMachine(
         if (inLiveStates && startAnchor != null) {
             var raw: Float? = null
             liveSource = LiveSource.NONE
+            // reset per-tick LIVE diagnostics
+            liveRawMeters = null
+            centerHitValid = false
 
             // 1) Ray-plane intersection (primary)
             val gp = groundPlaneModel
@@ -468,6 +485,9 @@ class V31StateMachine(
 
             if (raw != null && raw!!.isFinite() && raw!! > 0f) {
                 val cur = raw!!
+                // Record raw distance BEFORE smoothing/clamp (diagnostic only)
+                liveRawMeters = cur
+                centerHitValid = true
                 if (!liveHasValue) {
                     liveSmoothedMeters = cur
                     liveHasValue = true
@@ -488,6 +508,8 @@ class V31StateMachine(
             liveHasValue = false
             liveSmoothedMeters = 0f
             liveSource = LiveSource.NONE
+            liveRawMeters = null
+            centerHitValid = null
         }
 
         // --- Debug diagnostics (XYZ mode) ---
@@ -1044,6 +1066,8 @@ class V31StateMachine(
             ballGroundPlaneExtentX = ballGroundPlaneExtentX,
             ballGroundPlaneExtentZ = ballGroundPlaneExtentZ,
             ballCupPlaneAngleDeg = ballCupPlaneAngleDeg,
+            liveRawMeters = liveRawMeters,
+            centerHitValid = centerHitValid,
             multiRayGridHalfSpanPx = lastMultiRayGridHalfSpanPx,
             multiRayStepPx = lastMultiRayStepPx,
             validSampleCount = lastValidSampleCount,
