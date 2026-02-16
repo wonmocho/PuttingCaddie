@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#1E1E1E"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/txt_measure_guide_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/measurement_guide_title"
+        android:textColor="#FFFFFF"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginBottom="12dp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:maxHeight="440dp">
+
+        <TextView
+            android:id="@+id/txt_measure_guide_body"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/measurement_guide_body"
+            android:textColor="#D0D0D0"
+            android:textSize="14sp"
+            android:lineSpacingExtra="4dp" />
+    </ScrollView>
+
+    <Button
+        android:id="@+id/btn_close_measurement_guide"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/btn_close"
+        android:textSize="16sp"
+        android:padding="12dp"
+        android:layout_marginTop="16dp"
+        android:backgroundTint="#4CAF50"
+        android:textColor="@android:color/white" />
+
+</LinearLayout>
+

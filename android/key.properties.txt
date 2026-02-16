@@ -1,0 +1,4 @@
+storePassword=375124
+keyPassword=345124
+keyAlias=release
+storeFile=release-key.jks

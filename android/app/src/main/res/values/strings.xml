@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GreenIQ Distance</string>
+
+    <!-- Header -->
+    <string name="title_distance">GreenIQ Distance</string>
+    <string name="greeniq_subtitle_ready">Ready on Green</string>
+    <string name="greeniq_label_live">LIVE</string>
+    <string name="greeniq_label_final">FINAL</string>
+    <!-- Golf hints (English locale) -->
+    <string name="greeniq_hint_ball">Align ball in the target and tap BALL</string>
+    <string name="greeniq_hint_cup">Align cup in the target and tap CUP</string>
+    <string name="greeniq_hint_done">Tap ↺ to reset</string>
+    <string name="greeniq_reset">reset</string>
+    <string name="cd_more">More options</string>
+    <string name="menu_language">Language</string>
+    <string name="menu_screen_adjust">Screen adjust</string>
+    <string name="menu_unit">Unit</string>
+    <string name="menu_field_test">Field test log</string>
+    <string name="menu_measurement_guide">Measurement guide</string>
+    <string name="menu_send_feedback">Send feedback (email log)</string>
+
+    <!-- Survey / review -->
+    <string name="survey1_title">How stable did the measurement feel in real use?</string>
+    <string name="survey2_title">Over long-term use, how reliable does it feel?</string>
+    <string name="survey_desc">This quick feedback helps improve accuracy.</string>
+    <string name="survey1_opt_very_stable">Very stable</string>
+    <string name="survey1_opt_slightly_shaky">Slightly shaky</string>
+    <string name="survey1_opt_unstable">Unstable</string>
+    <string name="survey2_opt_trust_high">Very reliable</string>
+    <string name="survey2_opt_sometimes_unstable">Sometimes unstable</string>
+    <string name="survey2_opt_hard_to_trust">Hard to trust</string>
+    <string name="review_prompt_title">Please rate the app</string>
+    <string name="review_prompt_body">Thanks for using JustDistance.\nIf it helped you, a rating would mean a lot.</string>
+    <string name="review_btn_rate">Rate</string>
+
+    <!-- Status / Instruction -->
+    <string name="status_ready">Ready</string>
+    <string name="status_initializing_arcore">Initializing ARCore...</string>
+    <string name="status_measuring">Measuring...</string>
+    <string name="status_done">Ready</string>
+    <string name="status_camera_not_available">Camera not available</string>
+    <string name="status_arcore_init_failed">ARCore init failed</string>
+
+    <string name="toast_move_device">Move the device slowly</string>
+
+    <!-- Tracking status (templates) -->
+    <string name="tracking_good">Tracking: GOOD</string>
+    <string name="tracking_paused">Tracking: PAUSED</string>
+    <string name="tracking_paused_move">Tracking: PAUSED - %1$s</string>
+    <string name="tracking_stopped">Tracking: STOPPED</string>
+    <string name="tracking_other">Tracking: %1$s</string>
+
+    <string name="instr_move_slowly">💡 Move slowly</string>
+    <string name="instr_arcore_initializing">⏳ Initializing ARCore...</string>
+    <string name="instr_tracking_stopped_idle">⚠️ Tracking stopped. Move the device.</string>
+    <string name="instr_tracking_paused_idle">⚠️ Tracking paused. Move the device slowly.</string>
+    <string name="instr_xz_idle">💡 XZ(Hori): Measures horizontal distance.\nPress START to begin.</string>
+    <string name="instr_xyz_idle">💡 XYZ(3D): Measures true 3D distance.\nPress START to begin.</string>
+    <string name="instr_xz_measuring">🚶 Move slowly (XZ(Hori))</string>
+    <string name="instr_xyz_measuring">🚶 Move slowly (XYZ(3D))</string>
+
+    <!-- Mode / Unit -->
+    <string name="label_distance_mode">Mode:</string>
+    <string name="mode_xz">XZ(Hori)</string>
+    <string name="mode_xyz">XYZ(3D)</string>
+    <string name="label_unit">Unit:</string>
+    <string name="unit_m">m</string>
+    <string name="unit_yd">yd</string>
+
+    <!-- Buttons -->
+    <string name="btn_accuracy">Accuracy ℹ️</string>
+    <string name="btn_start">BALL</string>
+    <string name="btn_finish">CUP</string>
+    <string name="btn_reset">RESET</string>
+
+    <!-- Distance formats -->
+    <string name="distance_format">%1$.2f %2$s</string>
+    <string name="distance_detail_format">H %1$.2f %2$s · V %3$+.2f %4$s</string>
+
+    <!-- Accuracy bottom sheet -->
+    <string name="accuracy_title">📏 Accuracy guide</string>
+    <string name="accuracy_current_mode">Current mode: %1$s</string>
+    <string name="accuracy_header_range">Range</string>
+    <string name="accuracy_header_xz">XZ</string>
+    <string name="accuracy_header_xyz">XYZ</string>
+    <string name="accuracy_header_reliability">Reliability</string>
+    <string name="accuracy_note">※ Best within 5m.\n※ Move slowly.\n※ Measure when Tracking is GOOD.</string>
+    <string name="btn_close">Close</string>
+
+    <!-- Measurement guide bottom sheet -->
+    <string name="measurement_guide_title">🧭 Measurement Guide</string>
+    <string name="measurement_guide_body">1. Align the ball in the center target ring and tap BALL.\n\n2. Point the camera toward the cup.\n   Align the cup in the center target ring, then tap CUP.\n\n3. If the cup is too far to align in the center,\n   move closer by about 2–3 m and measure again.\n\n4. When FINAL is shown, the measurement is complete.\n\n※ Recommended within 10 m.\n※ Measure when Tracking is GOOD.\n※ Accuracy may vary depending on grass and lighting.</string>
+
+    <!-- Feedback / survey -->
+    <string name="feedback_survey_title">Did the measurement feel stable?</string>
+    <string name="feedback_survey_desc">This quick feedback helps improve accuracy.</string>
+    <string name="feedback_opt_very_stable">Very stable</string>
+    <string name="feedback_opt_slightly_shaky">Slightly shaky</string>
+    <string name="feedback_opt_unstable">Unstable</string>
+    <string name="feedback_send_log_title">Send a log?</string>
+    <string name="feedback_send_log_body">To help diagnose the issue, you can email recent measurement logs.\nNo personal data (name/email/location) is collected.</string>
+    <string name="feedback_btn_send_log">Send log</string>
+    <string name="feedback_toast_thanks">Thanks for your feedback.</string>
+    <string name="feedback_toast_no_email_app">No email app found.</string>
+
+    <!-- Language sheet -->
+    <string name="lang_sheet_title">Language (언어)</string>
+    <string name="lang_korean">Korean</string>
+    <string name="lang_english">English</string>
+    <string name="btn_cancel">Cancel</string>
+
+    <!-- Settings sheet -->
+    <string name="settings_sheet_title">Settings</string>
+
+    <!-- Unit sheet -->
+    <string name="unit_sheet_title">Unit</string>
+
+    <!-- Smooth surface hint -->
+    <string name="hint_ng_textured">Aim at textured or edged surfaces</string>
+
+    <!-- Screen adjust sheet -->
+    <string name="screen_adjust_title">Screen adjust</string>
+    <string name="screen_adjust_desc">Depending on your device model, the camera preview may appear rotated or mirrored.\nUse Rotation and Mirroring to adjust the preview to match your phone.</string>
+    <string name="screen_adjust_rotation">Rotation</string>
+    <string name="screen_adjust_rotation_value">Rotation angle: %1$d°</string>
+    <string name="screen_adjust_mirror_header">Mirroring</string>
+    <string name="screen_adjust_mirror_h">Mirror left/right</string>
+    <string name="screen_adjust_mirror_v">Mirror top/bottom</string>
+    <string name="screen_adjust_btn_reset">RESET</string>
+    <string name="screen_adjust_btn_cancel">CANCEL</string>
+    <string name="screen_adjust_btn_apply">APPLY</string>
+
+    <!-- MeasurePro (P2P Precision) -->
+    <string name="p2p_title">📐 MeasurePro</string>
+    <string name="p2p_state_ready">STATE: IDLE</string>
+    <string name="p2p_tracking_unknown">Tracking: (unknown)</string>
+    <string name="p2p_span_placeholder">Span(est): --</string>
+    <string name="p2p_sigma_placeholder">σ: -- (max --)</string>
+    <string name="p2p_hits_placeholder">Hits: -- / --</string>
+    <string name="p2p_grid_placeholder">Grid: --</string>
+    <string name="p2p_hit_type_placeholder">Hit: --</string>
+    <string name="p2p_state_format">STATE: %1$s</string>
+    <string name="p2p_tracking_format">Tracking: %1$s</string>
+    <string name="p2p_span_format">Span(est): %1$.3f m</string>
+    <string name="p2p_sigma_format">σ: %1$.3f m (max %2$.3f m)</string>
+    <string name="p2p_hits_format">Hits: %1$d / %2$d</string>
+    <string name="p2p_grid_format">Grid: %1$d</string>
+    <string name="p2p_hit_plane">Hit: PLANE</string>
+    <string name="p2p_hit_depth_point">Hit: DEPTH/POINT</string>
+    <string name="p2p_hit_none">Hit: NONE</string>
+    <string name="p2p_mode_label">Mode:</string>
+    <string name="p2p_mode_xyz">XYZ</string>
+    <string name="p2p_mode_xz">XZ (Horizontal)</string>
+    <string name="p2p_distance_placeholder">0.00 m</string>
+    <string name="p2p_distance_format">%1$.3f m</string>
+    <string name="p2p_btn_set_start">SET START</string>
+    <string name="p2p_btn_set_end">SET END</string>
+    <string name="p2p_btn_reset">RESET</string>
+    <string name="p2p_fail_no_valid_hits">Surface detection insufficient. Adjust angle or distance.</string>
+    <string name="p2p_fail_tracking_lost">Tracking lost. Move slowly and retry.</string>
+    <string name="p2p_fail_timeout">Stabilization not achieved. Reposition and retry.</string>
+</resources>
+

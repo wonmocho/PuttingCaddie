@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:background="@android:color/transparent">
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guidelineTop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintGuide_percent="0.12" />
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guidelineBottom"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintGuide_percent="0.78" />
+
+    <!-- Top bar background -->
+    <View
+        android:id="@+id/viewTopBarBg"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#0B5E3B"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/guidelineTop"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Bottom area background (hide camera outside ViewFinder) -->
+    <View
+        android:id="@+id/viewBottomBg"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#0B5E3B"
+        app:layout_constraintTop_toTopOf="@id/guidelineBottom"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageView
+        android:id="@+id/imgLogo"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:src="@drawable/greendistance_logo"
+        android:scaleType="fitCenter"
+        android:contentDescription="@string/app_name"
+        android:layout_marginStart="18dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg" />
+
+    <LinearLayout
+        android:id="@+id/layoutTopTexts"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="12dp"
+        app:layout_constraintStart_toEndOf="@id/imgLogo"
+        app:layout_constraintEnd_toStartOf="@id/btnSettings"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg">
+
+        <TextView
+            android:id="@+id/txtTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_distance"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="4dp"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/txtSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/greeniq_subtitle_ready"
+            android:textColor="#FFFFFF"
+            android:alpha="0.8"
+            android:textSize="14sp"
+            android:layout_marginBottom="3dp"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/txtTracking"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/status_ready"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:alpha="0.6"
+            android:includeFontPadding="false" />
+    </LinearLayout>
+
+    <ImageButton
+        android:id="@+id/btnSettings"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@android:drawable/ic_menu_manage"
+        android:tint="#FFFFFF"
+        android:contentDescription="@string/cd_more"
+        android:layout_marginEnd="14dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg" />
+
+    <com.justdistance.measurepro.ViewFinderView
+        android:id="@+id/viewFinder"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="@id/guidelineTop"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/guidelineBottom"
+        android:layout_marginTop="10dp"
+        android:layout_marginStart="18dp"
+        android:layout_marginEnd="18dp"
+        android:layout_marginBottom="10dp" />
+
+    <!-- Distance overlay (on camera) -->
+    <TextView
+        android:id="@+id/txtDistance"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0.0 m"
+        android:textColor="#18A558"
+        android:textSize="64sp"
+        android:textStyle="bold"
+        android:includeFontPadding="false"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toStartOf="@id/layoutResetTouch"
+        android:layout_marginBottom="18dp" />
+
+    <!-- Reset: touch 48dp, circle 40dp, icon 32dp -->
+    <FrameLayout
+        android:id="@+id/layoutResetTouch"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginStart="12dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/greeniq_reset"
+        app:layout_constraintTop_toTopOf="@id/txtDistance"
+        app:layout_constraintBottom_toBottomOf="@id/txtDistance"
+        app:layout_constraintStart_toEndOf="@id/txtDistance"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        app:layout_constraintHorizontal_chainStyle="packed">
+
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardResetBg"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="center"
+            app:cardBackgroundColor="#8CFFFFFF"
+            app:cardCornerRadius="20dp"
+            app:cardElevation="2dp"
+            app:cardUseCompatPadding="false">
+
+            <ImageView
+                android:id="@+id/imgResetIcon"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_reset_24"
+                android:tint="#E6FFFFFF"
+                android:contentDescription="@string/greeniq_reset" />
+        </com.google.android.material.card.MaterialCardView>
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/txtDistanceLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/greeniq_label_live"
+        android:textColor="#18A558"
+        android:textSize="11sp"
+        android:includeFontPadding="false"
+        android:alpha="0.7"
+        app:layout_constraintTop_toBottomOf="@id/txtDistance"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        android:layout_marginTop="-6dp" />
+
+    <!-- Success feedback (check only; no NG) -->
+    <ImageView
+        android:id="@+id/imgCheck"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:src="@drawable/ic_check_28"
+        android:tint="#18A558"
+        android:visibility="gone"
+        android:alpha="0"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintVertical_bias="0.62" />
+
+    <TextView
+        android:id="@+id/txtNgHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#CCCCCC"
+        android:textSize="13sp"
+        android:alpha="0"
+        android:visibility="gone"
+        android:layout_marginTop="6dp"
+        app:layout_constraintTop_toBottomOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/txt_instruction"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/greeniq_hint_ball"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:maxLines="2"
+        android:minLines="2"
+        android:background="@android:color/transparent"
+        android:gravity="center"
+        android:layout_marginTop="8dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        app:layout_constraintTop_toBottomOf="@id/guidelineBottom"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/layout_start_finish"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="12dp"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        app:layout_constraintTop_toBottomOf="@id/txt_instruction"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_start"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="@string/btn_start"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginEnd="8dp"
+            android:textColor="@android:color/white"
+            app:backgroundTint="#18A558"
+            app:cornerRadius="14dp"
+            app:strokeWidth="0dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_finish"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="@string/btn_finish"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginStart="8dp"
+            android:textColor="@android:color/white"
+            app:backgroundTint="#18A558"
+            app:cornerRadius="14dp"
+            app:strokeWidth="0dp"
+            android:enabled="false" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+

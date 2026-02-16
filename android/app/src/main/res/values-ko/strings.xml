@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GreenIQ Distance</string>
+
+    <!-- Header -->
+    <string name="title_distance">GreenIQ Distance</string>
+    <string name="greeniq_subtitle_ready">Ready on Green</string>
+    <string name="greeniq_label_live">LIVE</string>
+    <string name="greeniq_label_final">FINAL</string>
+    <!-- 골프 안내문구 (한국어 로케일) -->
+    <string name="greeniq_hint_ball">공을 중앙 목표에 맞추고 BALL을 누르세요</string>
+    <string name="greeniq_hint_cup">컵을 중앙에 맞추고 CUP을 누르세요</string>
+    <string name="greeniq_hint_done">↺를 눌러 리셋</string>
+    <string name="greeniq_reset">reset</string>
+    <string name="cd_more">추가 옵션</string>
+    <string name="menu_language">언어</string>
+    <string name="menu_screen_adjust">화면조정</string>
+    <string name="menu_unit">단위</string>
+    <string name="menu_field_test">필드 테스트 로그</string>
+    <string name="menu_measurement_guide">측정 가이드</string>
+    <string name="menu_send_feedback">피드백 보내기 (로그 이메일)</string>
+
+    <!-- Survey / review -->
+    <string name="survey1_title">실사용 기준에서 측정 안정성은 어떠셨나요?</string>
+    <string name="survey2_title">장기간 사용 기준에서 측정 신뢰도는 어떠셨나요?</string>
+    <string name="survey_desc">짧은 설문은 앱 개선에 큰 도움이 됩니다.</string>
+    <string name="survey1_opt_very_stable">매우 안정적</string>
+    <string name="survey1_opt_slightly_shaky">약간 흔들림</string>
+    <string name="survey1_opt_unstable">불안정</string>
+    <string name="survey2_opt_trust_high">매우 신뢰함</string>
+    <string name="survey2_opt_sometimes_unstable">가끔 불안정</string>
+    <string name="survey2_opt_hard_to_trust">신뢰하기 어려움</string>
+    <string name="review_prompt_title">평가 부탁드려요</string>
+    <string name="review_prompt_body">장기간 사용해 주셔서 감사합니다.\nJustDistance가 도움이 되었다면 평가를 남겨주시면 큰 힘이 됩니다.</string>
+    <string name="review_btn_rate">평가하기</string>
+
+    <!-- Status / Instruction -->
+    <string name="status_ready">준비됨</string>
+    <string name="status_initializing_arcore">ARCore 초기화 중...</string>
+    <string name="status_measuring">측정 중...</string>
+    <string name="status_done">측정 완료</string>
+    <string name="status_camera_not_available">카메라 사용 불가</string>
+    <string name="status_arcore_init_failed">ARCore 초기화 실패</string>
+
+    <string name="toast_move_device">기기를 움직여 주세요</string>
+
+    <!-- Tracking status (templates) -->
+    <string name="tracking_good">Tracking: GOOD</string>
+    <string name="tracking_paused">Tracking: PAUSED</string>
+    <string name="tracking_paused_move">Tracking: PAUSED - %1$s</string>
+    <string name="tracking_stopped">Tracking: STOPPED</string>
+    <string name="tracking_other">Tracking: %1$s</string>
+
+    <string name="instr_move_slowly">💡 천천히 이동하세요</string>
+    <string name="instr_arcore_initializing">⏳ ARCore 초기화 중...</string>
+    <string name="instr_tracking_stopped_idle">⚠️ Tracking이 중지되었습니다. 기기를 움직여주세요</string>
+    <string name="instr_tracking_paused_idle">⚠️ Tracking이 일시정지되었습니다. 기기를 천천히 움직여주세요</string>
+    <string name="instr_xz_idle">💡 XZ(수평) 모드: 수평 거리 측정\n[START] 버튼을 눌러 측정을 시작하세요</string>
+    <string name="instr_xyz_idle">💡 XYZ(3D) 모드: 3D 거리 측정\n[START] 버튼을 눌러 측정을 시작하세요</string>
+    <string name="instr_xz_measuring">🚶 천천히 이동하세요 (XZ(수평) 거리 측정)</string>
+    <string name="instr_xyz_measuring">🚶 천천히 이동하세요 (XYZ(3D) 거리 측정)</string>
+
+    <!-- Mode / Unit -->
+    <string name="label_distance_mode">거리 모드:</string>
+    <string name="mode_xz">XZ(수평)</string>
+    <string name="mode_xyz">XYZ(3D)</string>
+    <string name="label_unit">단위:</string>
+    <string name="unit_m">m</string>
+    <string name="unit_yd">yd</string>
+
+    <!-- Buttons -->
+    <string name="btn_accuracy">측정오차 ℹ️</string>
+    <string name="btn_start">BALL</string>
+    <string name="btn_finish">CUP</string>
+    <string name="btn_reset">RESET</string>
+
+    <!-- Distance formats -->
+    <string name="distance_format">%1$.2f %2$s</string>
+    <string name="distance_detail_format">수평 %1$.2f %2$s · 수직 %3$+.2f %4$s</string>
+
+    <!-- Accuracy bottom sheet -->
+    <string name="accuracy_title">📏 거리 측정 정확도 안내</string>
+    <string name="accuracy_current_mode">현재 모드: %1$s</string>
+    <string name="accuracy_header_range">측정 거리</string>
+    <string name="accuracy_header_xz">XZ (수평)</string>
+    <string name="accuracy_header_xyz">XYZ (3D)</string>
+    <string name="accuracy_header_reliability">신뢰도</string>
+    <string name="accuracy_note">※ 5m 이내에서 가장 정확합니다.\n※ 이동 속도를 천천히 유지하세요.\n※ Tracking 상태가 GOOD일 때 측정하세요.</string>
+    <string name="btn_close">닫기</string>
+
+    <!-- Measurement guide bottom sheet -->
+    <string name="measurement_guide_title">🧭 측정 가이드</string>
+    <string name="measurement_guide_body">1. 공을 중앙 목표 링에 맞추고 BALL 버튼을 누르세요.\n\n2. 카메라를 컵 방향으로 비추어\n   컵을 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n\n3. 컵이 멀어 중앙에 맞추기 어려운 경우,\n   2~3m 정도 컵에 근접한 뒤 다시 맞추어 측정하세요.\n\n4. FINAL 값이 표시되면 측정이 완료됩니다.\n\n※ 10m 이내 사용을 권장합니다.\n※ Tracking GOOD 상태에서 측정하세요.\n※ 잔디 상태와 조명에 따라 정확도가 달라질 수 있습니다.</string>
+
+    <!-- Feedback / survey -->
+    <string name="feedback_survey_title">측정이 안정적으로 느껴지셨나요?</string>
+    <string name="feedback_survey_desc">짧은 설문은 앱 개선에 큰 도움이 됩니다.</string>
+    <string name="feedback_opt_very_stable">매우 안정적</string>
+    <string name="feedback_opt_slightly_shaky">약간 흔들림</string>
+    <string name="feedback_opt_unstable">불안정</string>
+    <string name="feedback_send_log_title">로그를 보내시겠습니까?</string>
+    <string name="feedback_send_log_body">문제 분석을 위해 최근 측정 로그를 이메일로 전송할 수 있습니다.\n개인정보(이름/이메일/위치)는 수집하지 않습니다.</string>
+    <string name="feedback_btn_send_log">로그 보내기</string>
+    <string name="feedback_toast_thanks">피드백 감사합니다.</string>
+    <string name="feedback_toast_no_email_app">이메일 앱을 찾을 수 없습니다.</string>
+
+    <!-- Language sheet -->
+    <string name="lang_sheet_title">언어 (Language)</string>
+    <string name="lang_korean">한국어</string>
+    <string name="lang_english">영어</string>
+    <string name="btn_cancel">취소</string>
+
+    <!-- Settings sheet -->
+    <string name="settings_sheet_title">설정</string>
+
+    <!-- Unit sheet -->
+    <string name="unit_sheet_title">단위</string>
+
+    <!-- 매끈한 표면 힌트 -->
+    <string name="hint_ng_textured">질감 있는 부분이나 모서리를 겨냥하세요</string>
+
+    <!-- 화면조정 -->
+    <string name="screen_adjust_title">화면조정</string>
+    <string name="screen_adjust_desc">휴대폰 기종에 따라 카메라 프리뷰가 회전되거나 반전되어 보일 수 있습니다.\n회전과 반전을 통해 자신의 휴대폰에 맞게 카메라 프리뷰 회전/반전을 조정해 주세요.</string>
+    <string name="screen_adjust_rotation">회전</string>
+    <string name="screen_adjust_rotation_value">회전 각도: %1$d°</string>
+    <string name="screen_adjust_mirror_header">반전</string>
+    <string name="screen_adjust_mirror_h">좌우 반전</string>
+    <string name="screen_adjust_mirror_v">상하 반전</string>
+    <string name="screen_adjust_btn_reset">RESET</string>
+    <string name="screen_adjust_btn_cancel">CANCEL</string>
+    <string name="screen_adjust_btn_apply">APPLY</string>
+
+    <!-- MeasurePro (P2P Precision) -->
+    <string name="p2p_title">📐 MeasurePro</string>
+    <string name="p2p_state_ready">STATE: IDLE</string>
+    <string name="p2p_tracking_unknown">Tracking: (unknown)</string>
+    <string name="p2p_span_placeholder">Span(est): --</string>
+    <string name="p2p_sigma_placeholder">σ: -- (max --)</string>
+    <string name="p2p_hits_placeholder">Hits: -- / --</string>
+    <string name="p2p_grid_placeholder">Grid: --</string>
+    <string name="p2p_hit_type_placeholder">Hit: --</string>
+    <string name="p2p_state_format">STATE: %1$s</string>
+    <string name="p2p_tracking_format">Tracking: %1$s</string>
+    <string name="p2p_span_format">Span(est): %1$.3f m</string>
+    <string name="p2p_sigma_format">σ: %1$.3f m (max %2$.3f m)</string>
+    <string name="p2p_hits_format">Hits: %1$d / %2$d</string>
+    <string name="p2p_grid_format">Grid: %1$d</string>
+    <string name="p2p_hit_plane">Hit: PLANE</string>
+    <string name="p2p_hit_depth_point">Hit: DEPTH/POINT</string>
+    <string name="p2p_hit_none">Hit: NONE</string>
+    <string name="p2p_mode_label">Mode:</string>
+    <string name="p2p_mode_xyz">XYZ</string>
+    <string name="p2p_mode_xz">XZ (수평)</string>
+    <string name="p2p_distance_placeholder">0.00 m</string>
+    <string name="p2p_distance_format">%1$.3f m</string>
+    <string name="p2p_btn_set_start">시작점 설정</string>
+    <string name="p2p_btn_set_end">끝점 설정</string>
+    <string name="p2p_btn_reset">리셋</string>
+    <string name="p2p_fail_no_valid_hits">표면 인식이 부족합니다. 각도/거리를 조정하세요.</string>
+    <string name="p2p_fail_tracking_lost">Tracking이 불안정합니다. 천천히 움직여 재시도하세요.</string>
+    <string name="p2p_fail_timeout">안정화에 실패했습니다. 위치를 조정 후 재시도하세요.</string>
+</resources>
+
