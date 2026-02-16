@@ -1,4 +1,4 @@
-package com.justdistance.measurepro
+package com.wmcho.puttingcaddie
 
 import android.util.Log
 import com.google.ar.core.Pose

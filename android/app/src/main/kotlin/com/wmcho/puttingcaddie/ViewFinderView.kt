@@ -1,4 +1,4 @@
-package com.justdistance.measurepro
+package com.wmcho.puttingcaddie
 
 import android.animation.ValueAnimator
 import android.content.Context

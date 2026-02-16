@@ -1,4 +1,4 @@
-package com.justdistance.measurepro
+package com.wmcho.puttingcaddie
 
 import android.graphics.Color
 import android.graphics.RectF

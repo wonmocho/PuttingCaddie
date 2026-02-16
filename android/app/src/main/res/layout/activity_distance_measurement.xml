@@ -112,7 +112,7 @@
         app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
         app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg" />
 
-    <com.justdistance.measurepro.ViewFinderView
+    <com.wmcho.puttingcaddie.ViewFinderView
         android:id="@+id/viewFinder"
         android:layout_width="0dp"
         android:layout_height="0dp"

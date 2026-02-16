@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GreenIQ Distance</string>
+    <string name="app_name">퍼팅캐디</string>
 
     <!-- Header -->
-    <string name="title_distance">GreenIQ Distance</string>
+    <string name="title_distance">퍼팅캐디</string>
     <string name="greeniq_subtitle_ready">Ready on Green</string>
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
@@ -31,7 +31,7 @@
     <string name="survey2_opt_sometimes_unstable">가끔 불안정</string>
     <string name="survey2_opt_hard_to_trust">신뢰하기 어려움</string>
     <string name="review_prompt_title">평가 부탁드려요</string>
-    <string name="review_prompt_body">장기간 사용해 주셔서 감사합니다.\nJustDistance가 도움이 되었다면 평가를 남겨주시면 큰 힘이 됩니다.</string>
+    <string name="review_prompt_body">장기간 사용해 주셔서 감사합니다.\n퍼팅캐디가 도움이 되었다면 평가를 남겨주시면 큰 힘이 됩니다.</string>
     <string name="review_btn_rate">평가하기</string>
 
     <!-- Status / Instruction -->

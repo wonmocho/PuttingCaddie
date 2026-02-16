@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GreenIQ Distance</string>
+    <string name="app_name">퍼팅캐디</string>
 
     <!-- Header -->
-    <string name="title_distance">GreenIQ Distance</string>
+    <string name="title_distance">퍼팅캐디</string>
     <string name="greeniq_subtitle_ready">Ready on Green</string>
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
@@ -31,7 +31,7 @@
     <string name="survey2_opt_sometimes_unstable">Sometimes unstable</string>
     <string name="survey2_opt_hard_to_trust">Hard to trust</string>
     <string name="review_prompt_title">Please rate the app</string>
-    <string name="review_prompt_body">Thanks for using JustDistance.\nIf it helped you, a rating would mean a lot.</string>
+    <string name="review_prompt_body">Thanks for using PuttingCaddie.\nIf it helped you, a rating would mean a lot.</string>
     <string name="review_btn_rate">Rate</string>
 
     <!-- Status / Instruction -->

@@ -1,4 +1,4 @@
-package com.justdistance.measurepro
+package com.wmcho.puttingcaddie
 
 import kotlin.math.abs
 import kotlin.math.sqrt

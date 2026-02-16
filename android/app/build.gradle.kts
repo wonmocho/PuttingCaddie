@@ -21,7 +21,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.justdistance.measurepro"
+    namespace = "com.wmcho.puttingcaddie"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -35,7 +35,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.greeniq.distance"
+        applicationId = "com.wmcho.puttingcaddie"
 
         // ARCore + Play 안정성 고려
         minSdk = 24
