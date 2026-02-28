@@ -13,6 +13,7 @@
     <string name="greeniq_hint_done">↺를 눌러 리셋</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">추가 옵션</string>
+    <string name="cd_settings">설정</string>
     <string name="menu_language">언어</string>
     <string name="menu_screen_adjust">화면조정</string>
     <string name="menu_unit">단위</string>
@@ -69,7 +70,7 @@
     <string name="unit_yd">yd</string>
 
     <!-- Buttons -->
-    <string name="btn_accuracy">측정오차 ℹ️</string>
+    <string name="btn_accuracy">측정오차</string>
     <string name="btn_start">BALL</string>
     <string name="btn_finish">CUP</string>
     <string name="btn_reset">RESET</string>

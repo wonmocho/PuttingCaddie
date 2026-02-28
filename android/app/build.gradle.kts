@@ -82,6 +82,12 @@ android {
             // debug는 기본 debug 키 사용
         }
     }
+
+    lint {
+        // local.properties is machine-local and may contain Windows drive paths.
+        // Keep production code unchanged; disable only this environment lint rule.
+        disable += "PropertyEscape"
+    }
 }
 
 flutter {

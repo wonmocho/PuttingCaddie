@@ -46,7 +46,9 @@ import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.android.play.core.review.ReviewManagerFactory
 import java.io.File
+import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -161,6 +163,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private var cupCameraY: Float? = null
     private var cupMedianY: Float? = null
     private var cupCenterYOffsetApplied: Boolean? = null
+    private var cupMultiRayPlan: String? = null
+    private var cupMultiRayEstimatedDistanceMeters: Float? = null
+    private var cupMultiRayProjectedCupPx: Float? = null
+    private var cupMultiRayCenterFallbackUsed: Boolean? = null
 
     // Field test tags (persisted)
     private val KEY_TEST_DISTANCE_GROUP = "test_distance_group" // "2m" | "5m" | "10m"
@@ -310,11 +316,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     {
                         imgCheck.animate()
                             .alpha(0f)
-                            .setDuration(200L)
+                            .setDuration(260L)
                             .withEndAction { imgCheck.visibility = View.GONE }
                             .start()
                     },
-                    600L
+                    900L
                 )
             }
             .start()
@@ -341,6 +347,30 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     .scaleX(1.0f)
                     .scaleY(1.0f)
                     .setDuration(75L)
+                    .setInterpolator(itp)
+                    .start()
+            }
+            .start()
+    }
+
+    private fun animateLockPulse(view: TextView) {
+        // CUP lock emphasis: briefly enlarge then settle to normal size.
+        view.animate().cancel()
+        view.pivotX = view.width * 0.5f
+        view.pivotY = view.height * 0.5f
+        view.scaleX = 1.0f
+        view.scaleY = 1.0f
+        val itp = FastOutSlowInInterpolator()
+        view.animate()
+            .scaleX(1.08f)
+            .scaleY(1.08f)
+            .setDuration(110L)
+            .setInterpolator(itp)
+            .withEndAction {
+                view.animate()
+                    .scaleX(1.0f)
+                    .scaleY(1.0f)
+                    .setDuration(170L)
                     .setInterpolator(itp)
                     .start()
             }
@@ -938,9 +968,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 animateFinalDistance(txtDistance)
             }
         } else if (hasLive) {
-            // LIVE: accent green, semibold-ish (best-effort without custom font), 1 decimal
-            val accent = Color.parseColor("#18A558")
-            txtDistance.setTextColor(accent)
+            // LIVE: use high-contrast white (camera background can be green grass).
+            txtDistance.setTextColor(Color.WHITE)
             txtDistance.alpha = 1.0f
             txtDistance.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
             txtDistanceLabel.text = getString(R.string.greeniq_label_live)
@@ -1052,6 +1081,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         if (ui.engineState == V31StateMachine.State.END_LOCKED && ui.flashLock) {
             showCheckFeedback()
+            animateLockPulse(txtDistance)
             // Capture CUP fix stats for feedback log.
             cupValidHits = ui.sampleValidHits
             cupTotalPoints = ui.sampleTotalPoints
@@ -1070,6 +1100,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             cupCameraY = ui.cameraY
             cupMedianY = ui.medianY
             cupCenterYOffsetApplied = ui.centerYOffsetApplied
+            cupMultiRayPlan = ui.multiRayPlan
+            cupMultiRayEstimatedDistanceMeters = ui.multiRayEstimatedDistanceMeters
+            cupMultiRayProjectedCupPx = ui.multiRayProjectedCupPx
+            cupMultiRayCenterFallbackUsed = ui.multiRayCenterFallbackUsed
             ballCupPlaneAngleDeg = ui.ballCupPlaneAngleDeg
         }
         if (ui.engineState == V31StateMachine.State.IDLE) {
@@ -1119,6 +1153,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             cupCameraY = null
             cupMedianY = null
             cupCenterYOffsetApplied = null
+            cupMultiRayPlan = null
+            cupMultiRayEstimatedDistanceMeters = null
+            cupMultiRayProjectedCupPx = null
+            cupMultiRayCenterFallbackUsed = null
             lastNonFinalDistanceMeters = 0f
             lastNonFinalLiveSource = null
             lastNonFinalLiveRawMeters = null
@@ -1286,18 +1324,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         bottomSheetDialog.setContentView(bottomSheetView)
 
         val txtCurrentMode = bottomSheetView.findViewById<TextView>(R.id.txt_current_mode)
-        val currentMode = if (isAxisXzSelected()) getString(R.string.mode_xz) else getString(R.string.mode_xyz)
-        txtCurrentMode.text = getString(R.string.accuracy_current_mode, currentMode)
+        txtCurrentMode.text = getString(R.string.accuracy_current_mode, getString(R.string.mode_xz))
 
         val txtHeaderXZ = bottomSheetView.findViewById<TextView>(R.id.txt_header_xz)
-        val txtHeaderXYZ = bottomSheetView.findViewById<TextView>(R.id.txt_header_xyz)
-        if (isAxisXzSelected()) {
-            txtHeaderXZ.setTextColor(Color.parseColor("#4CAF50"))
-            txtHeaderXYZ.setTextColor(Color.parseColor("#9E9E9E"))
-        } else {
-            txtHeaderXZ.setTextColor(Color.parseColor("#9E9E9E"))
-            txtHeaderXYZ.setTextColor(Color.parseColor("#4CAF50"))
-        }
+        txtHeaderXZ.setTextColor(Color.parseColor("#4CAF50"))
 
         val layoutTableRows =
             bottomSheetView.findViewById<LinearLayout>(R.id.layout_table_rows)
@@ -1332,40 +1362,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             val txtXZError =
                 TextView(this).apply {
                     text = range.xzError
-                    setTextColor(
-                        if (isAxisXzSelected()) {
-                            Color.parseColor("#4CAF50")
-                        } else {
-                            Color.parseColor("#9E9E9E")
-                        }
-                    )
+                    setTextColor(Color.parseColor("#4CAF50"))
                     textSize = 14f
                     gravity = android.view.Gravity.CENTER
                     layoutParams =
                         LinearLayout.LayoutParams(
                             0,
                             LinearLayout.LayoutParams.WRAP_CONTENT,
-                            1f
-                        )
-                }
-
-            val txtXYZError =
-                TextView(this).apply {
-                    text = range.xyzError
-                    setTextColor(
-                        if (!isAxisXzSelected()) {
-                            Color.parseColor("#4CAF50")
-                        } else {
-                            Color.parseColor("#9E9E9E")
-                        }
-                    )
-                    textSize = 14f
-                    gravity = android.view.Gravity.CENTER
-                    layoutParams =
-                        LinearLayout.LayoutParams(
-                            0,
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            1f
+                            1.2f
                         )
                 }
 
@@ -1379,13 +1383,12 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                         LinearLayout.LayoutParams(
                             0,
                             LinearLayout.LayoutParams.WRAP_CONTENT,
-                            1f
+                            1.2f
                         )
                 }
 
             rowLayout.addView(txtDistanceRange)
             rowLayout.addView(txtXZError)
-            rowLayout.addView(txtXYZError)
             rowLayout.addView(txtReliability)
             layoutTableRows.addView(rowLayout)
         }
@@ -1546,6 +1549,22 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val light = p.getString(KEY_TEST_LIGHT, "SUNNY") ?: "SUNNY"
         val notes = p.getString(KEY_TEST_NOTES, "") ?: ""
 
+        // Timestamp (for JSONL ordering / "latest" clarity)
+        val tsMs = System.currentTimeMillis()
+        val tsUtcIso =
+            runCatching {
+                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+                    timeZone = TimeZone.getTimeZone("UTC")
+                }.format(java.util.Date(tsMs))
+            }.getOrNull() ?: ""
+        val tsLocalIso =
+            runCatching {
+                // e.g. 2026-02-17T11:30:12.345+09:00
+                SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).apply {
+                    timeZone = TimeZone.getDefault()
+                }.format(java.util.Date(tsMs))
+            }.getOrNull() ?: ""
+
         val isResult = ui.engineState == V31StateMachine.State.RESULT
         val isFail = ui.engineState == V31StateMachine.State.FAIL
 
@@ -1562,11 +1581,35 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         // Schema: MEASUREMENT_LOG (Cup 중심 분석용)
         val sb = StringBuilder()
         sb.append("{")
+        // Visual separator: make each JSONL line easy to spot in a text viewer.
+        // Keep JSON-per-line (do not prefix non-JSON text).
+        sb.append("\"MEASUREMENT\":\"START\",")
+        // Put time fields first (requested): easiest to see latest logs.
+        sb.append("\"timestamp_local\":\"").append(escJson(tsLocalIso)).append("\",")
+        sb.append("\"timestamp_ms\":").append(tsMs).append(",")
+        sb.append("\"timestamp_utc\":\"").append(escJson(tsUtcIso)).append("\",")
         sb.append("\"type\":\"MEASUREMENT\",")
         sb.append("\"appVersion\":\"").append(escJson(appVersionName())).append("\",")
         sb.append("\"deviceModel\":\"").append(escJson(android.os.Build.MODEL ?: "")).append("\",")
         sb.append("\"distanceGroup\":\"").append(escJson(distanceGroup)).append("\",")
         sb.append("\"groundTruth_m\":").append(String.format(Locale.US, "%.3f", groundTruth)).append(",")
+
+        fun appendBallJsonStringOrNull(key: String, value: String?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append("\"").append(escJson(value)).append("\"")
+        }
+        fun appendBallJsonIntOrNull(key: String, value: Int?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(value)
+        }
+        fun appendBallJsonFloatOrNull(key: String, value: Float?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(String.format(Locale.US, "%.3f", value))
+        }
+        fun appendBallJsonBoolOrNull(key: String, value: Boolean?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(if (value) "true" else "false")
+        }
 
         sb.append("\"ball\":{")
         sb.append("\"fixState\":\"").append(if (ballFixed) "FIXED" else if (isFail) "FAIL" else "FAIL").append("\",")
@@ -1583,6 +1626,31 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"hitDistanceFromCamera_m\":").append(String.format(Locale.US, "%.3f", ballGroundPlaneHitDistanceFromCameraMeters ?: 0f)).append(",")
         sb.append("\"extentX_m\":").append(String.format(Locale.US, "%.3f", ballGroundPlaneExtentX ?: 0f)).append(",")
         sb.append("\"extentZ_m\":").append(String.format(Locale.US, "%.3f", ballGroundPlaneExtentZ ?: 0f))
+        sb.append("}")
+        sb.append(",\"diag\":{")
+        appendBallJsonStringOrNull("ballGridMode", ui.ballGridMode)
+        sb.append(',')
+        appendBallJsonFloatOrNull("ballGridStepPx", ui.ballGridStepPx)
+        sb.append(',')
+        appendBallJsonIntOrNull("ballSampleTotalPoints", ui.ballSampleTotalPoints)
+        sb.append(',')
+        appendBallJsonIntOrNull("ballSampleValidHits", ui.ballSampleValidHits)
+        sb.append(',')
+        appendBallJsonStringOrNull("ballHitSourceUsed", ui.ballHitSourceUsed)
+        sb.append(',')
+        appendBallJsonBoolOrNull("ballFreezeUsed", ui.ballFreezeUsed)
+        sb.append(',')
+        sb.append("\"ballFreezeAgeMs\":").append(ui.ballFreezeAgeMs ?: "null")
+        sb.append(',')
+        appendBallJsonBoolOrNull("ballJumpRejected", ui.ballJumpRejected)
+        sb.append(',')
+        appendBallJsonIntOrNull("ballFixRuleWindow", ui.ballFixRuleWindow)
+        sb.append(',')
+        appendBallJsonIntOrNull("ballFixRuleNeedHits", ui.ballFixRuleNeedHits)
+        sb.append(',')
+        appendBallJsonIntOrNull("ballFixHitsInWindow", ui.ballFixHitsInWindow)
+        sb.append(',')
+        appendBallJsonStringOrNull("ballFixState", ui.ballFixState)
         sb.append("}")
         sb.append("},")
 
@@ -1602,10 +1670,71 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"hitDistanceMax_m\":").append(String.format(Locale.US, "%.3f", cupHitDistanceMaxMeters ?: 0f)).append(",")
         sb.append("\"cameraY\":").append(String.format(Locale.US, "%.3f", cupCameraY ?: 0f)).append(",")
         sb.append("\"medianY\":").append(String.format(Locale.US, "%.3f", cupMedianY ?: 0f)).append(",")
-        sb.append("\"centerYOffsetApplied\":").append(if (cupCenterYOffsetApplied == true) "true" else "false")
+        sb.append("\"centerYOffsetApplied\":").append(if (cupCenterYOffsetApplied == true) "true" else "false").append(",")
+        sb.append("\"multiRayPlan\":\"").append(escJson(cupMultiRayPlan ?: "")).append("\",")
+        sb.append("\"multiRayEstimatedDistance_m\":").append(String.format(Locale.US, "%.3f", cupMultiRayEstimatedDistanceMeters ?: 0f)).append(",")
+        sb.append("\"multiRayProjectedCupPx\":").append(String.format(Locale.US, "%.1f", cupMultiRayProjectedCupPx ?: 0f)).append(",")
+        sb.append("\"multiRayCenterFallbackUsed\":").append(if (cupMultiRayCenterFallbackUsed == true) "true" else "false")
+
+        // Always-on diagnostics (use UiModel values directly; do NOT rely on END_LOCKED capture vars).
+        fun appendJsonStringOrNull(key: String, value: String?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append("\"").append(escJson(value)).append("\"")
+        }
+        fun appendJsonIntOrNull(key: String, value: Int?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(value)
+        }
+        fun appendJsonFloatOrNull(key: String, value: Float?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(String.format(Locale.US, "%.3f", value))
+        }
+        fun appendJsonBoolOrNull(key: String, value: Boolean?) {
+            sb.append("\"").append(key).append("\":")
+            if (value == null) sb.append("null") else sb.append(if (value) "true" else "false")
+        }
+
+        sb.append(",\"diag\":{")
+        appendJsonStringOrNull("engineState", ui.engineState.name)
+        sb.append(',')
+        appendJsonStringOrNull("failReasonCode", ui.failReasonCode)
+        sb.append(',')
+        appendJsonStringOrNull("failDetailCode", ui.failDetailCode)
+        sb.append(',')
+        appendJsonIntOrNull("fixedMinSamples", ui.fixedMinSamples)
+        sb.append(',')
+        appendJsonIntOrNull("bufSize", ui.bufSize)
+        sb.append(',')
+        appendJsonIntOrNull("sigmaOkConsecutive", ui.sigmaOkConsecutive)
+        sb.append(',')
+        sb.append("\"sigmaOkElapsedMs\":").append(ui.sigmaOkElapsedMs ?: "null")
+        sb.append(',')
+        appendJsonFloatOrNull("sigmaCurrent_cm", ui.sigmaCurrentCmEnd)
+        sb.append(',')
+        appendJsonFloatOrNull("sigmaThreshold_cm", ui.sigmaThresholdCmEnd)
+        sb.append(',')
+        sb.append("\"sampleValidHits\":").append(ui.sampleValidHits).append(',')
+        sb.append("\"sampleTotalPoints\":").append(ui.sampleTotalPoints).append(',')
+        appendJsonStringOrNull("multiRayPlan", ui.multiRayPlan)
+        sb.append(',')
+        appendJsonIntOrNull("validSampleCount", ui.validSampleCount)
+        sb.append(',')
+        appendJsonFloatOrNull("multiRayGridHalfSpanPx", ui.multiRayGridHalfSpanPx)
+        sb.append(',')
+        appendJsonFloatOrNull("multiRayStepPx", ui.multiRayStepPx)
+        sb.append(',')
+        appendJsonBoolOrNull("centerYOffsetApplied", ui.centerYOffsetApplied)
+        sb.append(',')
+        appendJsonBoolOrNull("multiRayCenterFallbackUsed", ui.multiRayCenterFallbackUsed)
+        sb.append(',')
+        appendJsonFloatOrNull("multiRayEstimatedDistance_m", ui.multiRayEstimatedDistanceMeters)
+        sb.append(',')
+        appendJsonFloatOrNull("multiRayProjectedCupPx", ui.multiRayProjectedCupPx)
+        sb.append("}")
         sb.append("},")
 
         sb.append("\"result\":{")
+        sb.append("\"distanceSource\":\"LIVE_SNAPSHOT\",")
         sb.append("\"liveSource\":\"").append(escJson(lastNonFinalLiveSource ?: (ui.liveSource ?: "null"))).append("\",")
         sb.append("\"liveRaw_m\":").append(String.format(Locale.US, "%.3f", lastNonFinalLiveRawMeters ?: 0f)).append(",")
         sb.append("\"centerHitValid\":").append(if (lastNonFinalCenterHitValid == true) "true" else "false").append(",")
@@ -2039,7 +2168,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val itemLang = mkItem(getString(R.string.menu_language)) { showLanguageBottomSheet() }
         val itemAdjust = mkItem(getString(R.string.menu_screen_adjust)) { showScreenAdjustBottomSheet() }
         val itemUnit = mkItem(getString(R.string.menu_unit)) { showUnitBottomSheet() }
-        val itemFieldTest = mkItem(getString(R.string.menu_field_test)) { showFieldTestBottomSheet() }
         val itemAcc = mkItem(getString(R.string.btn_accuracy)) { showAccuracyBottomSheet() }
         val itemGuide = mkItem(getString(R.string.menu_measurement_guide)) { showMeasurementGuideBottomSheet() }
         val itemFeedback = mkItem(getString(R.string.menu_send_feedback)) { showSendFeedbackConfirmDialog() }
@@ -2060,7 +2188,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         root.addView(itemLang)
         root.addView(itemAdjust)
         root.addView(itemUnit)
-        root.addView(itemFieldTest)
         root.addView(itemAcc)
         root.addView(itemGuide)
         root.addView(itemFeedback)
@@ -2244,7 +2371,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
 
         val btnCancel = Button(this).apply {
-            text = getString(R.string.btn_cancel)
+            text = getString(R.string.btn_close)
             setTextColor(Color.WHITE)
             setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
             setBackgroundColor(Color.parseColor("#2A2A2A"))
@@ -2545,7 +2672,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
 
         val btnCancel = Button(this).apply {
-            text = getString(R.string.btn_cancel)
+            text = getString(R.string.btn_close)
             setTextColor(Color.WHITE)
             setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, 0)
             // 루트 배경을 어둡게 고정했으므로 버튼도 대비를 맞춤

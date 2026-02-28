@@ -48,7 +48,7 @@
             android:id="@+id/txt_header_xz"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:layout_weight="1.2"
             android:text="@string/accuracy_header_xz"
             android:textColor="#4CAF50"
             android:textSize="14sp"
@@ -56,20 +56,9 @@
             android:gravity="center" />
 
         <TextView
-            android:id="@+id/txt_header_xyz"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/accuracy_header_xyz"
-            android:textColor="#9E9E9E"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:gravity="center" />
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:layout_weight="1.2"
             android:text="@string/accuracy_header_reliability"
             android:textColor="#FFFFFF"
             android:textSize="14sp"
