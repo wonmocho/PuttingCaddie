@@ -17,15 +17,21 @@ class BackgroundRenderer {
     private var backgroundTextureId = -1
     private var backgroundMesh = -1
     private var texMatrixLocation = -1
+    private var zoomLocation = -1
 
     private var userRotationDeg = 0.0f
     private var mirrorHorizontal = false
     private var mirrorVertical = false
     private val texMatrix3 = FloatArray(9)
 
+    @Volatile
+    private var zoomLevel = 1.0f
+
     fun setZoomLevel(zoom: Float) {
-        // Deprecated path: kept for API compatibility but no longer used.
+        zoomLevel = zoom.coerceIn(1.0f, 3.0f)
     }
+
+    fun getZoomLevel(): Float = zoomLevel
 
     /**
      * lie-caddy-v1 style user adjustment: rotate/mirror preview at texture(UV) level.
@@ -65,9 +71,11 @@ class BackgroundRenderer {
         attribute vec2 aTexCoord;
         varying vec2 vTexCoord;
         uniform mat3 uTexMatrix;
+        uniform float uZoom;
         void main() {
             gl_Position = aPosition;
-            vec3 t = uTexMatrix * vec3(aTexCoord.xy, 1.0);
+            vec2 uv = (aTexCoord - 0.5) / max(uZoom, 1.0) + 0.5;
+            vec3 t = uTexMatrix * vec3(uv, 1.0);
             vTexCoord = t.xy;
         }
     """.trimIndent()
@@ -115,6 +123,7 @@ class BackgroundRenderer {
         backgroundShader = createShaderProgram(vertexShaderCode, fragmentShaderCode)
         backgroundTextureId = GLES20.glGetUniformLocation(backgroundShader, "sTexture")
         texMatrixLocation = GLES20.glGetUniformLocation(backgroundShader, "uTexMatrix")
+        zoomLocation = GLES20.glGetUniformLocation(backgroundShader, "uZoom")
 
         val vertices =
             ByteBuffer.allocateDirect(backgroundVertices.size * 4).order(ByteOrder.nativeOrder())
@@ -153,6 +162,7 @@ class BackgroundRenderer {
         GLES20.glUniform1i(backgroundTextureId, 0)
         updateTexMatrix()
         GLES20.glUniformMatrix3fv(texMatrixLocation, 1, false, texMatrix3, 0)
+        GLES20.glUniform1f(zoomLocation, zoomLevel)
 
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, backgroundMesh)
         GLES20.glEnableVertexAttribArray(0)

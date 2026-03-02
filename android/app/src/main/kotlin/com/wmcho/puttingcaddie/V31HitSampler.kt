@@ -49,10 +49,12 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val preferUpwardFacing: Boolean,
         val requireUpwardFacing: Boolean,
         // If true: allow plane hits even when hitPose is outside polygon.
-        // Useful for far distances where plane extent is smaller than the target area.
         val allowOutsidePolygon: Boolean = false,
         // If set: reject hits with hitY > (cameraY - yBelowCameraMeters)
-        val yBelowCameraMeters: Float? = null
+        val yBelowCameraMeters: Float? = null,
+        // If true: pick FARTHEST hit (for ball-to-cup when camera is behind ball).
+        // Default false: pick closest (standard hitTest behavior).
+        val preferFarthestForDistance: Boolean = false
     )
 
     private data class SelectedHit(
@@ -70,7 +72,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val glH = mapper.viewHeightPx().toFloat()
         if (glW <= 1f || glH <= 1f) return null
 
-        val pLocal = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocalRaw = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocal = mapper.unzoomLocal(pLocalRaw)
         val screenPts = floatArrayOf(
             (pLocal.x / glW).coerceIn(0f, 1f),
             (pLocal.y / glH).coerceIn(0f, 1f)
@@ -103,7 +106,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val glH = mapper.viewHeightPx().toFloat()
         if (glW <= 1f || glH <= 1f) return null
 
-        val pLocal = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocalRaw = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocal = mapper.unzoomLocal(pLocalRaw)
         val screenPts = floatArrayOf(
             (pLocal.x / glW).coerceIn(0f, 1f),
             (pLocal.y / glH).coerceIn(0f, 1f)
@@ -147,15 +151,15 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
 
             if (isUpward) {
                 if (inside) {
-                    if (bestUpwardInside == null || r.distance < bestUpwardInside!!.distance - 0.0001f) bestUpwardInside = r
+                    if (bestUpwardInside == null || (if (policy.preferFarthestForDistance) r.distance > bestUpwardInside!!.distance + 0.0001f else r.distance < bestUpwardInside!!.distance - 0.0001f)) bestUpwardInside = r
                 } else {
-                    if (bestUpwardOutside == null || r.distance < bestUpwardOutside!!.distance - 0.0001f) bestUpwardOutside = r
+                    if (bestUpwardOutside == null || (if (policy.preferFarthestForDistance) r.distance > bestUpwardOutside!!.distance + 0.0001f else r.distance < bestUpwardOutside!!.distance - 0.0001f)) bestUpwardOutside = r
                 }
             } else {
                 if (inside) {
-                    if (bestOtherInside == null || r.distance < bestOtherInside!!.distance - 0.0001f) bestOtherInside = r
+                    if (bestOtherInside == null || (if (policy.preferFarthestForDistance) r.distance > bestOtherInside!!.distance + 0.0001f else r.distance < bestOtherInside!!.distance - 0.0001f)) bestOtherInside = r
                 } else {
-                    if (bestOtherOutside == null || r.distance < bestOtherOutside!!.distance - 0.0001f) bestOtherOutside = r
+                    if (bestOtherOutside == null || (if (policy.preferFarthestForDistance) r.distance > bestOtherOutside!!.distance + 0.0001f else r.distance < bestOtherOutside!!.distance - 0.0001f)) bestOtherOutside = r
                 }
             }
         }
@@ -174,7 +178,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
      * - Prefer HORIZONTAL_UPWARD_FACING
      * - Distance cap
      * - Optional Y filter (must be below camera)
-     * - Choose closest hit.distance
+     * - By default: choose closest hit.distance. If preferFarthestForDistance:
+     *   choose farthest (for ball-to-cup when camera is behind ball).
      */
     fun hitTestBestPlaneAtScreenPoint(
         frame: Frame,
@@ -183,7 +188,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         maxDistanceMeters: Float,
         preferUpwardFacing: Boolean,
         allowOutsidePolygon: Boolean = false,
-        yBelowCameraMeters: Float? = null
+        yBelowCameraMeters: Float? = null,
+        preferFarthestForDistance: Boolean = false
     ): HitResult? {
         val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
         val results = frame.hitTest(pAdj.x, pAdj.y)
@@ -194,7 +200,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 preferUpwardFacing = preferUpwardFacing,
                 requireUpwardFacing = false,
                 allowOutsidePolygon = allowOutsidePolygon,
-                yBelowCameraMeters = yBelowCameraMeters
+                yBelowCameraMeters = yBelowCameraMeters,
+                preferFarthestForDistance = preferFarthestForDistance
             )
         return selectBestPlaneHit(results, policy, camY)
     }
@@ -471,7 +478,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: 1f
 
         for (p in samplePoints) {
-            val pLocal = mapper.screenToLocal(p)
+            val pLocalRaw = mapper.screenToLocal(p)
+            val pLocal = mapper.unzoomLocal(pLocalRaw)
             screenPts[idxPt++] = (pLocal.x / glW).coerceIn(0f, 1f)
             screenPts[idxPt++] = (pLocal.y / glH).coerceIn(0f, 1f)
         }
@@ -565,9 +573,13 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 }
         }
 
-        val bestPlane = pickBestByMedianDistance(plane)
-        val bestDepth = pickBestByMedianDistance(depth)
-        val bestPoint = pickBestByMedianDistance(point)
+        // BALL (gridCount==9): Prefer FARTHEST hit for all trackable types. When standing
+        // behind the ball (e.g. 3m back), plane may not be available and depth/point hits
+        // use median → wrong cluster (camera-facing). Farthest = intended target (ball).
+        val useFarthest = (gridCount == 9)
+        val bestPlane = if (useFarthest) pickBestByFarthestDistance(plane) else pickBestByMedianDistance(plane)
+        val bestDepth = if (useFarthest) pickBestByFarthestDistance(depth) else pickBestByMedianDistance(depth)
+        val bestPoint = if (useFarthest) pickBestByFarthestDistance(point) else pickBestByMedianDistance(point)
 
         return when {
             bestPlane != null -> Sample(bestPlane, HitType.PLANE, planeValid, samplePoints.size)
@@ -575,6 +587,30 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             bestPoint != null -> Sample(bestPoint, HitType.POINT, pointValid, samplePoints.size)
             else -> Sample(null, HitType.NONE, max(planeValid, max(depthValid, pointValid)), samplePoints.size)
         }
+    }
+
+    /**
+     * For BALL locking: prefer the hit with the LARGEST distance (farthest from camera).
+     * When aiming at the ball from behind, the ball is the farthest target; closer hits
+     * are often floor/obstacles between camera and ball. Tie-break: closer to ROI center.
+     */
+    private fun pickBestByFarthestDistance(cands: List<Candidate>): HitResult? {
+        if (cands.isEmpty()) return null
+        var best: Candidate? = null
+        for (c in cands) {
+            if (best == null) {
+                best = c
+                continue
+            }
+            val bd = best!!.hit.distance
+            val cd = c.hit.distance
+            if (cd > bd + 0.0001f) {
+                best = c
+            } else if (abs(cd - bd) <= 0.0001f) {
+                if (c.distToRoiCenter < best!!.distToRoiCenter - 0.0001f) best = c
+            }
+        }
+        return best?.hit
     }
 
     private fun pickBestByMedianDistance(cands: List<Candidate>): HitResult? {
@@ -644,5 +680,7 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val simple = trackable.javaClass.simpleName
         return name == "com.google.ar.core.DepthPoint" || simple == "DepthPoint"
     }
+
+    fun currentZoomLevel(): Float = mapper.zoomLevel
 }
 

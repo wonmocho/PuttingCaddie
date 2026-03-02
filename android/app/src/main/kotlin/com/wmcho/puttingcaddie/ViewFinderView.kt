@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
+import androidx.core.content.ContextCompat
 import kotlin.math.max
 
 class ViewFinderView @JvmOverloads constructor(
@@ -41,6 +42,13 @@ class ViewFinderView @JvmOverloads constructor(
         alpha = 180 // ~0.7
         strokeCap = Paint.Cap.SQUARE
     }
+    private val crossOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = crossStrokePx + dp(1f)
+        color = Color.BLACK
+        alpha = 110
+        strokeCap = Paint.Cap.SQUARE
+    }
     private val qualityPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
         color = Color.parseColor("#4CAF50")
@@ -51,6 +59,25 @@ class ViewFinderView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = ringStrokePx
         color = Color.WHITE
+    }
+    private val ringOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = ringStrokePx + dp(1f)
+        color = Color.BLACK
+        alpha = 110
+    }
+    private val innerDotStrokePx = dp(1.2f)
+    private val innerDotRadiusPx = dp(7f)
+    private val innerDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = innerDotStrokePx
+        color = Color.WHITE
+    }
+    private val innerDotOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = innerDotStrokePx + dp(1f)
+        color = Color.BLACK
+        alpha = 110
     }
 
     private var state: State = State.DEFAULT
@@ -96,7 +123,7 @@ class ViewFinderView @JvmOverloads constructor(
                 State.STABILIZING -> Color.parseColor("#FFF59D") // warning yellow
                 State.DEFAULT -> {
                     // Golf UI: use accent green when quality is OK.
-                    if (qualityState == QualityState.OK) Color.parseColor("#18A558") else Color.WHITE
+                    if (qualityState == QualityState.OK) ContextCompat.getColor(context, R.color.pc_crosshair_lime) else Color.WHITE
                 }
             }
         val wantedColor = if (now <= flashUntilMs) flashColor else baseColor
@@ -145,6 +172,7 @@ class ViewFinderView @JvmOverloads constructor(
         val wantedRadius = (screenW * 0.12f) * 0.5f
         val maxRadius = (kotlin.math.min(rect.width(), rect.height()) * 0.45f).coerceAtLeast(dp(12f))
         val radius = wantedRadius.coerceAtMost(maxRadius)
+        canvas.drawCircle(cx, cy, radius, ringOutlinePaint)
         canvas.drawCircle(cx, cy, radius, ringPaint)
 
         // Crosshair: slightly longer (requested), still centered on the ring.
@@ -154,8 +182,19 @@ class ViewFinderView @JvmOverloads constructor(
         val alphaBoost = if (state == State.STABILIZING) 30 else 0
         crossPaint.color = currentColor
         crossPaint.alpha = (baseAlpha + alphaBoost).coerceAtMost(255)
+        crossOutlinePaint.alpha = (crossPaint.alpha * 0.75f).toInt().coerceIn(0, 255)
+        canvas.drawLine(cx - hLen, cy, cx + hLen, cy, crossOutlinePaint)
+        canvas.drawLine(cx, cy - vLen, cx, cy + vLen, crossOutlinePaint)
         canvas.drawLine(cx - hLen, cy, cx + hLen, cy, crossPaint)
         canvas.drawLine(cx, cy - vLen, cx, cy + vLen, crossPaint)
+
+        // 중심점: 십자가 교차부에 아주 작은 동그라미 (선 굵기 < 십자가)
+        innerDotPaint.color = currentColor
+        innerDotPaint.strokeWidth = innerDotStrokePx
+        innerDotPaint.alpha = crossPaint.alpha
+        innerDotOutlinePaint.alpha = (crossPaint.alpha * 0.75f).toInt().coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, innerDotRadiusPx, innerDotOutlinePaint)
+        canvas.drawCircle(cx, cy, innerDotRadiusPx, innerDotPaint)
 
         if (now <= flashUntilMs || (colorAnim?.isRunning == true)) {
             postInvalidateOnAnimation()

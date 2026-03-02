@@ -1,4 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#0B1F1D</color>
+    <color name="pc_bg_primary">#0F3D2E</color>
+    <color name="pc_surface_dark">#1C1C1C</color>
+
+    <color name="pc_white">#FFFFFF</color>
+    <color name="pc_shadow_black">#73000000</color>
+
+    <color name="pc_accent_green">#00E676</color>
+    <color name="pc_crosshair_lime">#A6FF00</color>
+
+    <color name="pc_warning_orange">#FFB300</color>
+    <color name="pc_error_red">#FF3D00</color>
+
+    <color name="pc_button_dark">#1E1E1E</color>
+    <color name="pc_button_text_selected">#0D0D0D</color>
 </resources>

@@ -14,6 +14,8 @@
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">More options</string>
     <string name="cd_settings">Settings</string>
+    <string name="cd_zoom_in">Zoom in</string>
+    <string name="cd_zoom_out">Zoom out</string>
     <string name="menu_language">Language</string>
     <string name="menu_screen_adjust">Screen adjust</string>
     <string name="menu_unit">Unit</string>
@@ -119,6 +121,9 @@
 
     <!-- Smooth surface hint -->
     <string name="hint_ng_textured">Aim at textured or edged surfaces</string>
+    <string name="cup_auto_detected">Cup auto-detected</string>
+    <string name="cup_auto_active_short">AUTO</string>
+    <string name="cup_manual_aim">Manual aim</string>
 
     <!-- Screen adjust sheet -->
     <string name="screen_adjust_title">Screen adjust</string>

@@ -30,6 +30,7 @@ class V31StateMachine(
 ) {
     // Debug-only diagnostics for XYZ H/V issues (no UI exposure).
     private var dbgLastHvLogNs: Long = 0L
+    private var dbgLastZoomHitLogNs: Long = 0L
     private var dbgPrevH: Float = Float.NaN
     private var dbgPrevV: Float = Float.NaN
 
@@ -221,8 +222,10 @@ class V31StateMachine(
     // GREENIQ LIVE relaxed hit policy (v1 fix)
     private val LIVE_MAX_HIT_DISTANCE_M = 25f
     private val LIVE_JUMP_GUARD_M = 3.0f
-    private val LIVE_RAYDIR_Y_EPS = 0.05f
-    private val LIVE_MAX_FRAME_DELTA_M = 0.7f
+    // Relaxed from 0.05 so ray-plane works when camera is behind ball (more horizontal view)
+    private val LIVE_RAYDIR_Y_EPS = 0.02f
+    // Frame clamp + smoothing (tuned): slightly faster than 0.4 / 85:15 while keeping stability
+    private val LIVE_MAX_FRAME_DELTA_M = 0.55f
 
     var axisMode: AxisMode = AxisMode.XZ
     var state: State = State.IDLE
@@ -266,6 +269,7 @@ class V31StateMachine(
     private var startRequestPending: Boolean = false
     private var finishRequestPending: Boolean = false
     private var startLockedAtNs: Long = 0L
+    private var endLockedAtNs: Long = 0L
     private var lastDisplayDistanceMeters: Float = 0f
 
     private var finalDistanceMeters: Float = 0f
@@ -328,6 +332,12 @@ class V31StateMachine(
     private var ballDiagFreezeAgeMs: Long? = null
     private var ballDiagJumpRejected: Boolean? = null
     private var ballDiagFixState: String? = null
+
+    private fun currentBallFixNeedHits(): Int {
+        // Minimal guard for 3.0x zoom: require one extra hit to reduce false fixes.
+        val z = sampler.currentZoomLevel()
+        return if (z >= 2.9f) 4 else BALL_FIX_NEED_HITS
+    }
 
     fun onUiEvent(e: UiEvent, nowNs: Long) {
         when (e) {
@@ -399,6 +409,17 @@ class V31StateMachine(
                 state = State.AIM_END
                 startLockedAtNs = 0L
                 resetEndDisplayBuf()
+            }
+        }
+        // END_LOCKED is also transient: auto-finalize RESULT without second tap.
+        if (state == State.END_LOCKED && endLockedAtNs > 0L) {
+            if (nowNs - endLockedAtNs >= 1L) {
+                finalDistanceMeters =
+                    endLiveSnapshotMeters.takeIf { it.isFinite() && it > 0f }
+                        ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
+                        ?: 0f
+                state = State.RESULT
+                endLockedAtNs = 0L
             }
         }
 
@@ -665,7 +686,7 @@ class V31StateMachine(
                 }
             }
 
-            // 2) Fallback: relaxed hitTest (LIVE only)
+            // 2) Fallback: hitTest with FARTHEST hit (ball-to-cup; camera may be behind ball)
             if (raw == null) {
                 val centerHit =
                     sampler.hitTestBestPlaneAtScreenPoint(
@@ -674,7 +695,8 @@ class V31StateMachine(
                         screenY = roiScreen.centerY(),
                         maxDistanceMeters = LIVE_MAX_HIT_DISTANCE_M,
                         preferUpwardFacing = false,
-                        yBelowCameraMeters = null
+                        yBelowCameraMeters = null,
+                        preferFarthestForDistance = true
                     )
                 if (centerHit != null) {
                     raw = distanceFromStartToPoseMeters(startAnchor!!.pose, centerHit.hitPose)
@@ -692,13 +714,22 @@ class V31StateMachine(
                     liveHasValue = true
                 } else {
                     val prev = liveSmoothedMeters
-                    // Frame clamp: prevent overly fast visual motion even if math is valid.
+                    // Frame clamp: limit change per frame for smooth display on rapid camera move
                     val delta = (cur - prev).coerceIn(-LIVE_MAX_FRAME_DELTA_M, LIVE_MAX_FRAME_DELTA_M)
                     val curClamped = prev + delta
                     val jumpLimit = max(LIVE_JUMP_GUARD_M, prev * 0.35f)
                     if (abs(curClamped - prev) <= jumpLimit) {
-                        liveSmoothedMeters = (prev * 0.7f) + (curClamped * 0.3f)
+                        // Balanced inertia (75/25): smoother than baseline, faster than 85/15
+                        liveSmoothedMeters = (prev * 0.75f) + (curClamped * 0.25f)
                     }
+                }
+                if (debugLoggingEnabled && nowNs - dbgLastZoomHitLogNs >= 300_000_000L) {
+                    dbgLastZoomHitLogNs = nowNs
+                    Log.d(
+                        "ZOOM_HIT",
+                        "state=$state src=${liveSource.name} raw=${"%.3f".format(cur)} smooth=${"%.3f".format(liveSmoothedMeters)} " +
+                            "bestHitDist=${"%.3f".format(sample.bestHit?.distance ?: 0f)} hitType=${sample.hitType} valid=${sample.validHits}/${sample.totalPoints}"
+                    )
                 }
             }
             // If no valid raw: keep previous live (per directive).
@@ -763,7 +794,7 @@ class V31StateMachine(
             lastAimSample = sample
             if (state == State.AIM_START && startRequestPending) {
                 val hit = ballEffectiveHitForTick ?: sample.bestHit
-                if (hit != null && ballFixHitsInWindow >= BALL_FIX_NEED_HITS) {
+                if (hit != null && ballFixHitsInWindow >= currentBallFixNeedHits()) {
                     startRequestPending = false
                     enterStabilizingStart(nowNs, hit)
                     return buildUi(nowNs, tracking, sample)
@@ -849,7 +880,7 @@ class V31StateMachine(
 
             if (state == State.STABILIZING_START) {
                 val holdElapsed = nowNs - stabilizingEnterNs
-                if (buf.size >= BALL_FIX_NEED_HITS && holdElapsed >= BALL_FIX_MIN_HOLD_NS) {
+                if (buf.size >= currentBallFixNeedHits() && holdElapsed >= BALL_FIX_MIN_HOLD_NS) {
                     confirmLock(nowNs, stabilizingHit)
                     buf.clear()
                     lastAimSample = null
@@ -922,7 +953,7 @@ class V31StateMachine(
         fixedDEstMeters = hit.distance
         // START/BALL: prioritize FIX availability over precision.
         fixedGrid = 9
-        fixedMinSamples = BALL_FIX_NEED_HITS
+        fixedMinSamples = currentBallFixNeedHits()
     }
 
     private fun enterStabilizingEnd(nowNs: Long, hit: HitResult) {
@@ -990,7 +1021,7 @@ class V31StateMachine(
                     Log.d(
                         "V31StateMachine",
                         "BALL_FIX_OK src=${ballDiagHitSourceUsed ?: "UNKNOWN"} freeze=${ballDiagFreezeUsed ?: false} freezeAgeMs=${ballDiagFreezeAgeMs ?: -1} " +
-                            "jumpRejected=${ballDiagJumpRejected ?: false} hitsWindow=$ballFixHitsInWindow/${BALL_FIX_WINDOW_FRAMES} ruleNeed=$BALL_FIX_NEED_HITS " +
+                            "jumpRejected=${ballDiagJumpRejected ?: false} hitsWindow=$ballFixHitsInWindow/${BALL_FIX_WINDOW_FRAMES} ruleNeed=${currentBallFixNeedHits()} " +
                             "valid=${ballDiagSampleValidHits ?: 0}/${ballDiagSampleTotalPoints ?: 0} grid=${ballDiagGridMode ?: "UNKNOWN"} stepPx=${ballDiagGridStepPx ?: 0f} " +
                             "planeType=${plane.type.name} absNy=${"%.3f".format(kotlin.math.abs(ny))}"
                     )
@@ -1007,7 +1038,7 @@ class V31StateMachine(
                     Log.d(
                         "V31StateMachine",
                         "BALL_FIX_OK src=${ballDiagHitSourceUsed ?: "UNKNOWN"} freeze=${ballDiagFreezeUsed ?: false} freezeAgeMs=${ballDiagFreezeAgeMs ?: -1} " +
-                            "jumpRejected=${ballDiagJumpRejected ?: false} hitsWindow=$ballFixHitsInWindow/${BALL_FIX_WINDOW_FRAMES} ruleNeed=$BALL_FIX_NEED_HITS " +
+                            "jumpRejected=${ballDiagJumpRejected ?: false} hitsWindow=$ballFixHitsInWindow/${BALL_FIX_WINDOW_FRAMES} ruleNeed=${currentBallFixNeedHits()} " +
                             "valid=${ballDiagSampleValidHits ?: 0}/${ballDiagSampleTotalPoints ?: 0} grid=${ballDiagGridMode ?: "UNKNOWN"} stepPx=${ballDiagGridStepPx ?: 0f} planeType=NONE"
                     )
                 }
@@ -1016,6 +1047,7 @@ class V31StateMachine(
                 endAnchor?.detach()
                 endAnchor = anchor
                 state = State.END_LOCKED
+                endLockedAtNs = nowNs
                 // Capture LIVE snapshot to prevent END_LOCKED jump to anchor-based distance.
                 endLiveSnapshotMeters =
                     (if (liveHasValue && liveSmoothedMeters.isFinite() && liveSmoothedMeters > 0f) liveSmoothedMeters else null)
@@ -1068,6 +1100,7 @@ class V31StateMachine(
         startRequestPending = false
         finishRequestPending = false
         startLockedAtNs = 0L
+        endLockedAtNs = 0L
         consecutiveNoValidHits = 0
         sigmaOkConsecutive = 0
         sigmaOkStartNs = 0L
@@ -1326,7 +1359,7 @@ class V31StateMachine(
         val startEnabled =
             when (state) {
                 State.IDLE -> trackingOk
-                State.AIM_START -> trackingOk && ballFixHitsInWindow >= BALL_FIX_NEED_HITS
+                State.AIM_START -> trackingOk && ballFixHitsInWindow >= currentBallFixNeedHits()
                 else -> false
             }
 
@@ -1449,7 +1482,7 @@ class V31StateMachine(
             ballFreezeAgeMs = ballDiagFreezeAgeMs,
             ballJumpRejected = ballDiagJumpRejected,
             ballFixRuleWindow = BALL_FIX_WINDOW_FRAMES,
-            ballFixRuleNeedHits = BALL_FIX_NEED_HITS,
+            ballFixRuleNeedHits = currentBallFixNeedHits(),
             ballFixHitsInWindow = ballFixHitsInWindow,
             ballFixState = ballDiagFixState,
             horizontalVerticalMeters = hv,

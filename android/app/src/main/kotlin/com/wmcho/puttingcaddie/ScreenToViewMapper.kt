@@ -24,6 +24,8 @@ class ScreenToViewMapper(private val targetView: View) {
     @Volatile var rotationDeg: Float = 0f   // [-180..180] allowed
     @Volatile var mirrorH: Boolean = false  // left<->right
     @Volatile var mirrorV: Boolean = false  // top<->bottom
+    // Render zoom level (BackgroundRenderer.uZoom). Raycast path must apply inverse zoom.
+    @Volatile var zoomLevel: Float = 1.0f
 
     fun markDirty() {
         dirty = true
@@ -53,6 +55,24 @@ class ScreenToViewMapper(private val targetView: View) {
         val pts = floatArrayOf(p.x, p.y)
         screenToLocal.mapPoints(pts)
         return PointF(pts[0], pts[1])
+    }
+
+    /**
+     * Inverse of render zoom around view center.
+     * Render uses: pZoomed = (pBase - c) * z + c
+     * For raycast we need base coords: pBase = (pZoomed - c) / z + c
+     */
+    fun unzoomLocal(p: PointF): PointF {
+        val z = zoomLevel.coerceAtLeast(1.0f)
+        if (z <= 1.0001f) return p
+        val w = targetView.width.toFloat()
+        val h = targetView.height.toFloat()
+        if (w <= 1f || h <= 1f) return p
+        val cx = w * 0.5f
+        val cy = h * 0.5f
+        val x = ((p.x - cx) / z) + cx
+        val y = ((p.y - cy) / z) + cy
+        return PointF(x.coerceIn(0f, w), y.coerceIn(0f, h))
     }
 
     /**

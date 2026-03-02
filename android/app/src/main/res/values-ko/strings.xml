@@ -14,6 +14,8 @@
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">추가 옵션</string>
     <string name="cd_settings">설정</string>
+    <string name="cd_zoom_in">확대</string>
+    <string name="cd_zoom_out">축소</string>
     <string name="menu_language">언어</string>
     <string name="menu_screen_adjust">화면조정</string>
     <string name="menu_unit">단위</string>
@@ -119,6 +121,9 @@
 
     <!-- 매끈한 표면 힌트 -->
     <string name="hint_ng_textured">질감 있는 부분이나 모서리를 겨냥하세요</string>
+    <string name="cup_auto_detected">컵 자동 인식됨</string>
+    <string name="cup_auto_active_short">AUTO</string>
+    <string name="cup_manual_aim">수동 조준</string>
 
     <!-- 화면조정 -->
     <string name="screen_adjust_title">화면조정</string>

@@ -88,6 +88,7 @@ android {
         // Keep production code unchanged; disable only this environment lint rule.
         disable += "PropertyEscape"
     }
+
 }
 
 flutter {
@@ -102,6 +103,7 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
 
     // Google Play In-App Review (used only on 2nd survey positive path)
     implementation("com.google.android.play:review:2.0.1")

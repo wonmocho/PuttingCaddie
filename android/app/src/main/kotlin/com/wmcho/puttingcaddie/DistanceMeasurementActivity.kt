@@ -6,7 +6,11 @@ import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.PointF
+import android.graphics.Rect
 import android.graphics.Typeface
+import android.graphics.YuvImage
+import android.graphics.Matrix
 import android.content.res.ColorStateList
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
@@ -20,6 +24,7 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.ReplacementSpan
 import android.util.Log
 import android.view.LayoutInflater
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.animation.ObjectAnimator
 import android.animation.Animator
@@ -44,7 +49,9 @@ import com.google.ar.core.Config
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.android.play.core.review.ReviewManagerFactory
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -81,6 +88,21 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         private const val KEY_SURVEY1_CHOICE = "fb_survey1_choice"
         private const val KEY_SURVEY2_CHOICE = "fb_survey2_choice"
         private const val KEY_REVIEW_REQUESTED = "fb_review_requested"
+
+        // YOLO cup assist: false = 완전 배제 (수동 조준만)
+        private const val CUP_YOLO_ENABLED = false
+        // YOLO cup assist tuning (골프장=엄격 검출만 AUTO, 일반환경=수동 위주)
+        private const val CUP_YOLO_CONF_THRESHOLD = 0.72f
+        private const val CUP_YOLO_IOU_THRESHOLD = 0.45f
+        private const val CUP_YOLO_STABLE_FRAMES_ON = 4
+        private const val CUP_YOLO_STABLE_FRAMES_OFF = 2
+        private const val CUP_YOLO_CONSECUTIVE_MISS_TO_OFF = 2
+        private const val CUP_YOLO_MAX_AGE_NS = 900_000_000L   // 900ms
+        private const val CUP_YOLO_INFER_INTERVAL_NS = 200_000_000L  // 200ms
+        private const val CUP_YOLO_MIN_BOX_PX = 14
+        private const val CUP_YOLO_ROI_SHIFT_MAX_RATIO = 0.12f
+        private const val CUP_YOLO_SMOOTHING_ALPHA = 0.25f   // cur*(1-alpha) + new*alpha
+        private const val CUP_YOLO_FREEZE_AFTER_FINISH_NS = 1_200_000_000L  // 1.2s
     }
 
     private val TAG = "DistanceMeasurement"
@@ -100,9 +122,17 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private lateinit var txtTracking: TextView
     private lateinit var txtInstruction: TextView
     private lateinit var txtNgHint: TextView
+    private lateinit var txtCupAssist: TextView
+    private lateinit var dotYolo: View
+    private lateinit var dotHit: View
+    private lateinit var dotRoi: View
     private lateinit var btnStart: MaterialButton
     private lateinit var btnFinish: MaterialButton
     private lateinit var layoutResetTouch: FrameLayout
+    private lateinit var txtZoomRatio: TextView
+    private lateinit var layoutZoomButtons: View
+    private lateinit var btnZoomPlus: com.google.android.material.button.MaterialButton
+    private lateinit var btnZoomMinus: com.google.android.material.button.MaterialButton
     private lateinit var imgCheck: ImageView
     private lateinit var btnSettings: ImageButton
 
@@ -118,6 +148,27 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private var startPressedAtNs: Long = 0L
     private var ngStartAtNs: Long = 0L
     private var hasEverBeenOkSinceStart: Boolean = false
+    private var cupAssistActivePrev: Boolean = false
+    private var lastCupAssistCueMs: Long = 0L
+    private var cupYoloDetector: CupYoloDetector? = null
+    private var cupYoloInitTried: Boolean = false
+    private var cupYoloLastInferNs: Long = 0L
+    private var cupYoloLastSeenNs: Long = 0L
+    private var cupYoloStableFrames: Int = 0
+    private var cupYoloLastCenter: PointF? = null
+    @Volatile private var cupYoloAssistActive: Boolean = false
+    @Volatile private var cupYoloFreezeUntilNs: Long = 0L  // Finish 직후 AUTO 정지 구간
+    @Volatile private var cupYoloConsecutiveMisses: Int = 0
+    private var cupYoloActivationCount: Int = 0
+    private var cupYoloDeactivationConsecutiveMissCount: Int = 0
+    private var cupYoloAssistActiveAtLock: Boolean = false
+    private var cupYoloStableFramesAtLock: Int = 0
+
+    private val zoomSteps = floatArrayOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f)
+    private var zoomStepIndex = 0
+    @Volatile private var cupDebugYoloPoint: PointF? = null
+    @Volatile private var cupDebugHitPoint: PointF? = null
+    @Volatile private var cupDebugRoiPoint: PointF? = null
 
     private var unitMode: UnitMode = UnitMode.METER
     // 마지막 측정값(항상 meters 기준) - 단위 변경 시 즉시 재표시용
@@ -211,6 +262,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     // --- v3.1 throttle ---
     private val HIT_THROTTLE_NS = 50_000_000L
     private var lastEngineTickNs: Long = 0L
+    private var lastZoomDebugLogNs: Long = 0L
 
     override fun attachBaseContext(newBase: Context) {
         val prefs = newBase.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
@@ -249,10 +301,18 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         txtTracking = findViewById(R.id.txtTracking)
         txtInstruction = findViewById(R.id.txt_instruction)
         txtNgHint = findViewById(R.id.txtNgHint)
+        txtCupAssist = findViewById(R.id.txtCupAssist)
+        dotYolo = findViewById(R.id.dotYolo)
+        dotHit = findViewById(R.id.dotHit)
+        dotRoi = findViewById(R.id.dotRoi)
         btnStart = findViewById(R.id.btn_start)
         btnFinish = findViewById(R.id.btn_finish)
         btnSettings = findViewById(R.id.btnSettings)
         viewFinder = findViewById(R.id.viewFinder)
+        txtZoomRatio = findViewById(R.id.txtZoomRatio)
+        layoutZoomButtons = findViewById(R.id.layoutZoomButtons)
+        btnZoomPlus = findViewById(R.id.btnZoomPlus)
+        btnZoomMinus = findViewById(R.id.btnZoomMinus)
 
         // Load unit preference early (unit toggle is in menu only).
         unitMode = loadUnitPref()
@@ -268,7 +328,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             showNgHint(false)
             pendingEngineEvents.add(V31StateMachine.UiEvent.StartPressed)
         }
-        btnFinish.setOnClickListener { pendingEngineEvents.add(V31StateMachine.UiEvent.FinishPressed) }
+        btnFinish.setOnClickListener {
+            cupYoloFreezeUntilNs = System.nanoTime() + CUP_YOLO_FREEZE_AFTER_FINISH_NS
+            pendingEngineEvents.add(V31StateMachine.UiEvent.FinishPressed)
+        }
         layoutResetTouch.setOnClickListener {
             // quick tap feedback: subtle scale-down then restore
             it.animate().cancel()
@@ -286,6 +349,32 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         btnSettings.setOnClickListener { showSettingsBottomSheet() }
 
+        fun applyZoom() {
+            val z = zoomSteps[zoomStepIndex]
+            backgroundRenderer.setZoomLevel(z)
+            mapper?.zoomLevel = z
+            txtZoomRatio.text = when (z) {
+                1.0f -> "1.0x"
+                1.5f -> "1.5x"
+                2.0f -> "2.0x"
+                2.5f -> "2.5x"
+                3.0f -> "3.0x"
+                else -> "%.1fx".format(Locale.US, z)
+            }
+        }
+        btnZoomPlus.setOnClickListener {
+            if (zoomStepIndex < zoomSteps.size - 1) {
+                zoomStepIndex++
+                applyZoom()
+            }
+        }
+        btnZoomMinus.setOnClickListener {
+            if (zoomStepIndex > 0) {
+                zoomStepIndex--
+                applyZoom()
+            }
+        }
+
         btnStart.isEnabled = false
         btnFinish.isEnabled = false
         txtDistance.text = formatDistanceWithDecimals(0f, 1)
@@ -296,6 +385,15 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         imgCheck.alpha = 0f
         txtNgHint.visibility = View.GONE
         txtNgHint.alpha = 0f
+        txtCupAssist.visibility = View.GONE
+        txtCupAssist.alpha = 0f
+        dotYolo.visibility = View.GONE
+        dotHit.visibility = View.GONE
+        dotRoi.visibility = View.GONE
+        txtZoomRatio.visibility = View.GONE
+        layoutZoomButtons.visibility = View.GONE
+        backgroundRenderer.setZoomLevel(1.0f)
+        applyZoom()
     }
 
     private fun showCheckFeedback() {
@@ -711,6 +809,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         mapper?.rotationDeg = screenRotDeg
         mapper?.mirrorH = screenMirrorH
         mapper?.mirrorV = screenMirrorV
+        mapper?.zoomLevel = backgroundRenderer.getZoomLevel()
         v31Engine = V31Engine(mapper!!, debugLoggingEnabled = isDebuggableBuild())
 
         // Legacy engine is kept as a safety net but is OFF by default.
@@ -832,10 +931,30 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     val vf = viewFinder
                     if (vf != null) {
                         val roi = vf.getFinderRectOnScreen(android.graphics.RectF())
-                        val ui = engine.onFrame(frame, roi, nowNs)
+                        val roiForEngine = maybeApplyCupYoloAssist(frame, roi, nowNs)
+                        if (isDebuggableBuild() && nowNs - lastZoomDebugLogNs >= 300_000_000L) {
+                            lastZoomDebugLogNs = nowNs
+                            val intr = frame.camera.imageIntrinsics
+                            val f = intr.focalLength
+                            val pp = intr.principalPoint
+                            val centerSx = roiForEngine.centerX()
+                            val centerSy = roiForEngine.centerY()
+                            val localRaw = mapper?.screenToLocal(PointF(centerSx, centerSy))
+                            val localUnzoom = localRaw?.let { mapper?.unzoomLocal(it) }
+                            Log.d(
+                                "ZOOM_DEBUG",
+                                "zoom=${"%.2f".format(Locale.US, backgroundRenderer.getZoomLevel())} " +
+                                    "fx=${"%.1f".format(Locale.US, f[0])} fy=${"%.1f".format(Locale.US, f[1])} " +
+                                    "cx=${"%.1f".format(Locale.US, pp[0])} cy=${"%.1f".format(Locale.US, pp[1])} " +
+                                    "centerS=(${String.format(Locale.US, "%.1f", centerSx)},${String.format(Locale.US, "%.1f", centerSy)}) " +
+                                    "centerLocalRaw=(${String.format(Locale.US, "%.1f", localRaw?.x ?: 0f)},${String.format(Locale.US, "%.1f", localRaw?.y ?: 0f)}) " +
+                                    "centerLocalUnzoom=(${String.format(Locale.US, "%.1f", localUnzoom?.x ?: 0f)},${String.format(Locale.US, "%.1f", localUnzoom?.y ?: 0f)})"
+                            )
+                        }
+                        val ui = engine.onFrame(frame, roiForEngine, nowNs)
                         if (shadowLegacy && engine !== legacyEngine) {
                             legacyEngine?.setAxisMode(axis)
-                            legacyEngine?.onFrame(frame, roi, nowNs) // compute only; ignore result
+                            legacyEngine?.onFrame(frame, roiForEngine, nowNs) // compute only; ignore result
                         }
                         runOnUiThread { applyUiModel(ui) }
                     }
@@ -876,7 +995,219 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         previewGlView?.let {
             findViewById<android.view.ViewGroup>(android.R.id.content).removeView(it)
         }
+        runCatching { cupYoloDetector?.close() }
+        cupYoloDetector = null
         session?.close()
+    }
+
+    private fun isCupPhaseForYolo(): Boolean {
+        return when (lastEngineState) {
+            V31StateMachine.State.AIM_END,
+            V31StateMachine.State.STABILIZING_END,
+            V31StateMachine.State.END_LOCKED -> true
+            else -> false
+        }
+    }
+
+    private fun maybeApplyCupYoloAssist(frame: com.google.ar.core.Frame, roi: android.graphics.RectF, nowNs: Long): android.graphics.RectF {
+        if (!CUP_YOLO_ENABLED) {
+            cupYoloAssistActive = false
+            cupYoloStableFrames = 0
+            cupYoloConsecutiveMisses = 0
+            cupDebugYoloPoint = null
+            cupDebugHitPoint = null
+            cupDebugRoiPoint = null
+            return roi
+        }
+        if (!isCupPhaseForYolo()) {
+            cupYoloAssistActive = false
+            cupYoloStableFrames = 0
+            cupYoloConsecutiveMisses = 0
+            cupDebugYoloPoint = null
+            cupDebugHitPoint = null
+            cupDebugRoiPoint = null
+            return roi
+        }
+        cupDebugRoiPoint = PointF(roi.centerX(), roi.centerY())
+
+        // Finish 직후 1.2초 동안 AUTO 정지 → 확정 순간은 수동 기준으로 유지
+        if (nowNs < cupYoloFreezeUntilNs) {
+            cupYoloAssistActive = false
+            cupDebugHitPoint = PointF(roi.centerX(), roi.centerY())
+            return roi
+        }
+
+        val detector =
+            if (cupYoloDetector != null) {
+                cupYoloDetector
+            } else {
+                if (!cupYoloInitTried) {
+                    cupYoloInitTried = true
+                    cupYoloDetector = runCatching { CupYoloDetector(this) }.getOrNull()
+                }
+                cupYoloDetector
+            } ?: return roi
+
+        // YOLO inference throttle: keep CPU/thermal stable.
+        if (nowNs - cupYoloLastInferNs >= CUP_YOLO_INFER_INTERVAL_NS) {
+            cupYoloLastInferNs = nowNs
+            val gl = previewGlView
+            val targetW = gl?.width ?: 0
+            val targetH = gl?.height ?: 0
+            val bmp = frameToCanonicalBitmap(frame, targetW, targetH)
+            if (bmp != null) {
+                val detections = detector.detectCup(
+                    bmp,
+                    confThreshold = CUP_YOLO_CONF_THRESHOLD,
+                    iouThreshold = CUP_YOLO_IOU_THRESHOLD
+                )
+                val best =
+                    detections
+                        .filter {
+                            it.rect.width() >= CUP_YOLO_MIN_BOX_PX &&
+                                it.rect.height() >= CUP_YOLO_MIN_BOX_PX
+                        }
+                        .maxByOrNull { it.score * (it.rect.width() * it.rect.height()) }
+                if (best != null) {
+                    val nx = (best.rect.centerX() / bmp.width.toFloat()).coerceIn(0f, 1f)
+                    val ny = (best.rect.centerY() / bmp.height.toFloat()).coerceIn(0f, 1f)
+                    val gl = previewGlView
+                    val glLoc = IntArray(2)
+                    gl?.getLocationOnScreen(glLoc)
+                    val glW = gl?.width?.toFloat()?.takeIf { it > 1f }
+                    val glH = gl?.height?.toFloat()?.takeIf { it > 1f }
+                    val sx =
+                        if (glW != null) {
+                            glLoc[0] + (nx * glW)
+                        } else {
+                            roi.left + (roi.width() * nx)
+                        }
+                    val sy =
+                        if (glH != null) {
+                            glLoc[1] + (ny * glH)
+                        } else {
+                            roi.top + (roi.height() * ny)
+                        }
+                    cupDebugYoloPoint = PointF(sx, sy)
+                    val cur = cupYoloLastCenter
+                    val alpha = CUP_YOLO_SMOOTHING_ALPHA
+                    cupYoloLastCenter =
+                        if (cur == null) {
+                            PointF(sx, sy)
+                        } else {
+                            PointF((cur.x * (1f - alpha)) + (sx * alpha), (cur.y * (1f - alpha)) + (sy * alpha))
+                        }
+                    cupYoloStableFrames = (cupYoloStableFrames + 1).coerceAtMost(20)
+                    cupYoloLastSeenNs = nowNs
+                    cupYoloConsecutiveMisses = 0
+                } else {
+                    cupDebugYoloPoint = null
+                    cupYoloConsecutiveMisses = (cupYoloConsecutiveMisses + 1).coerceAtMost(10)
+                    if (cupYoloConsecutiveMisses >= CUP_YOLO_CONSECUTIVE_MISS_TO_OFF) {
+                        cupYoloStableFrames = 0
+                        cupYoloDeactivationConsecutiveMissCount++
+                    } else {
+                        cupYoloStableFrames = (cupYoloStableFrames - 1).coerceAtLeast(0)
+                    }
+                }
+                bmp.recycle()
+            }
+        }
+
+        val ageOk = (nowNs - cupYoloLastSeenNs <= CUP_YOLO_MAX_AGE_NS)
+        val onThreshold = cupYoloStableFrames >= CUP_YOLO_STABLE_FRAMES_ON
+        val offThreshold = cupYoloStableFrames >= CUP_YOLO_STABLE_FRAMES_OFF
+        val active = ageOk && (onThreshold || (cupYoloAssistActive && offThreshold))
+        cupYoloAssistActive = active
+        if (!active) {
+            cupDebugHitPoint = PointF(roi.centerX(), roi.centerY())
+            return roi
+        }
+
+        val target = cupYoloLastCenter ?: return roi
+        val maxShiftX = roi.width() * CUP_YOLO_ROI_SHIFT_MAX_RATIO
+        val maxShiftY = roi.height() * CUP_YOLO_ROI_SHIFT_MAX_RATIO
+        val dx = (target.x - roi.centerX()).coerceIn(-maxShiftX, maxShiftX)
+        val dy = (target.y - roi.centerY()).coerceIn(-maxShiftY, maxShiftY)
+        val shifted = android.graphics.RectF(roi.left + dx, roi.top + dy, roi.right + dx, roi.bottom + dy)
+        cupDebugHitPoint = PointF(shifted.centerX(), shifted.centerY())
+        return shifted
+    }
+
+    private fun frameToBitmap(frame: com.google.ar.core.Frame): android.graphics.Bitmap? {
+        val image = try {
+            frame.acquireCameraImage()
+        } catch (_: NotYetAvailableException) {
+            return null
+        } catch (_: Exception) {
+            return null
+        }
+        return try {
+            val planes = image.planes
+            if (planes.size < 3) return null
+            val yBuffer = planes[0].buffer
+            val uBuffer = planes[1].buffer
+            val vBuffer = planes[2].buffer
+            val ySize = yBuffer.remaining()
+            val uSize = uBuffer.remaining()
+            val vSize = vBuffer.remaining()
+            val nv21 = ByteArray(ySize + uSize + vSize)
+            yBuffer.get(nv21, 0, ySize)
+            vBuffer.get(nv21, ySize, vSize)
+            uBuffer.get(nv21, ySize + vSize, uSize)
+            val yuv = YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
+            val out = ByteArrayOutputStream()
+            yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
+            val bytes = out.toByteArray()
+            out.close()
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (_: Exception) {
+            null
+        } finally {
+            image.close()
+        }
+    }
+
+    private fun frameToCanonicalBitmap(frame: com.google.ar.core.Frame, targetW: Int, targetH: Int): android.graphics.Bitmap? {
+        val raw = frameToBitmap(frame) ?: return null
+        val adjusted = try {
+            val cx = raw.width * 0.5f
+            val cy = raw.height * 0.5f
+            val m = Matrix()
+            // Keep canonical orientation aligned with preview texture adjustment.
+            if (screenMirrorH || screenMirrorV) {
+                m.postScale(if (screenMirrorH) -1f else 1f, if (screenMirrorV) -1f else 1f, cx, cy)
+            }
+            if (screenRotDeg != 0f) {
+                m.postRotate(-screenRotDeg, cx, cy)
+            }
+            val transformed = android.graphics.Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
+            if (transformed !== raw) raw.recycle()
+            transformed
+        } catch (_: Exception) {
+            raw
+        }
+
+        // Option A: enforce View aspect ratio via center-crop to keep YOLO/View coordinates 1:1.
+        if (targetW <= 1 || targetH <= 1) return adjusted
+        val srcAspect = adjusted.width.toFloat() / adjusted.height.toFloat()
+        val dstAspect = targetW.toFloat() / targetH.toFloat()
+        val cropped =
+            if (kotlin.math.abs(srcAspect - dstAspect) < 0.0001f) {
+                adjusted
+            } else {
+                val (cropW, cropH) =
+                    if (srcAspect > dstAspect) {
+                        Pair((adjusted.height * dstAspect).toInt().coerceAtLeast(1), adjusted.height)
+                    } else {
+                        Pair(adjusted.width, (adjusted.width / dstAspect).toInt().coerceAtLeast(1))
+                    }
+                val left = ((adjusted.width - cropW) / 2).coerceAtLeast(0)
+                val top = ((adjusted.height - cropH) / 2).coerceAtLeast(0)
+                runCatching { android.graphics.Bitmap.createBitmap(adjusted, left, top, cropW, cropH) }.getOrNull() ?: adjusted
+            }
+        if (cropped !== adjusted) adjusted.recycle()
+        return cropped
     }
 
     private fun applyUiModel(ui: V31StateMachine.UiModel) {
@@ -1082,6 +1413,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         if (ui.engineState == V31StateMachine.State.END_LOCKED && ui.flashLock) {
             showCheckFeedback()
             animateLockPulse(txtDistance)
+            cupYoloAssistActiveAtLock = cupYoloAssistActive
+            cupYoloStableFramesAtLock = cupYoloStableFrames
             // Capture CUP fix stats for feedback log.
             cupValidHits = ui.sampleValidHits
             cupTotalPoints = ui.sampleTotalPoints
@@ -1107,6 +1440,12 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             ballCupPlaneAngleDeg = ui.ballCupPlaneAngleDeg
         }
         if (ui.engineState == V31StateMachine.State.IDLE) {
+            zoomStepIndex = 0
+            backgroundRenderer.setZoomLevel(1.0f)
+            mapper?.zoomLevel = 1.0f
+            txtZoomRatio.text = "1.0x"
+            txtZoomRatio.visibility = View.GONE
+            layoutZoomButtons.visibility = View.GONE
             startLockedOkUntilNs = 0L
             startPressedAtNs = 0L
             ngStartAtNs = 0L
@@ -1161,6 +1500,17 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             lastNonFinalLiveSource = null
             lastNonFinalLiveRawMeters = null
             lastNonFinalCenterHitValid = null
+            cupYoloAssistActive = false
+            cupYoloStableFrames = 0
+            cupYoloLastCenter = null
+            cupYoloLastSeenNs = 0L
+            cupYoloFreezeUntilNs = 0L
+            cupYoloConsecutiveMisses = 0
+            cupYoloActivationCount = 0
+            cupYoloDeactivationConsecutiveMissCount = 0
+            cupYoloAssistActiveAtLock = false
+            cupYoloStableFramesAtLock = 0
+            cupAssistActivePrev = false
         }
 
         val qualityToShow: ViewFinderView.QualityState =
@@ -1204,6 +1554,27 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 }
                 else -> ViewFinderView.QualityState.NONE
             }
+
+        val cupAssistScope =
+            CUP_YOLO_ENABLED && (
+                inEndStates ||
+                    ui.engineState == V31StateMachine.State.END_LOCKED
+            )
+        val cupAssistActive = cupAssistScope && cupYoloAssistActive
+        updateCupAssistUi(cupAssistScope, cupAssistActive)
+        updateCupDebugDots(cupAssistScope)
+        if (cupAssistActive && !cupAssistActivePrev) {
+            cupYoloActivationCount++
+            runCupAssistAcquiredCue()
+        }
+        cupAssistActivePrev = cupAssistActive
+
+        val inCupPhase =
+            ui.engineState == V31StateMachine.State.AIM_END ||
+                ui.engineState == V31StateMachine.State.STABILIZING_END ||
+                ui.engineState == V31StateMachine.State.END_LOCKED
+        txtZoomRatio.visibility = if (inCupPhase) View.VISIBLE else View.GONE
+        layoutZoomButtons.visibility = if (inCupPhase) View.VISIBLE else View.GONE
 
         viewFinder?.let { vf ->
             vf.setState(ui.viewFinderState)
@@ -1265,6 +1636,89 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     .start()
             }
         }
+    }
+
+    private fun updateCupAssistUi(show: Boolean, active: Boolean) {
+        if (!show) {
+            if (txtCupAssist.visibility == View.VISIBLE) {
+                txtCupAssist.animate().cancel()
+                txtCupAssist.animate()
+                    .alpha(0f)
+                    .setDuration(100L)
+                    .withEndAction { txtCupAssist.visibility = View.GONE }
+                    .start()
+            }
+            return
+        }
+
+        txtCupAssist.text = if (active) getString(R.string.cup_auto_active_short) else getString(R.string.cup_manual_aim)
+        txtCupAssist.setBackgroundResource(
+            if (active) R.drawable.bg_cup_assist_active else R.drawable.bg_cup_assist_inactive
+        )
+        if (txtCupAssist.visibility != View.VISIBLE) {
+            txtCupAssist.visibility = View.VISIBLE
+            txtCupAssist.alpha = 0f
+            txtCupAssist.animate().alpha(0.96f).setDuration(130L).start()
+        } else if (txtCupAssist.alpha < 0.96f) {
+            txtCupAssist.animate().alpha(0.96f).setDuration(90L).start()
+        }
+    }
+
+    private fun runCupAssistAcquiredCue() {
+        val nowMs = SystemClock.elapsedRealtime()
+        if (nowMs - lastCupAssistCueMs < 1200L) return
+        lastCupAssistCueMs = nowMs
+
+        txtCupAssist.animate().cancel()
+        txtCupAssist.text = getString(R.string.cup_auto_detected)
+        txtCupAssist.setBackgroundResource(R.drawable.bg_cup_assist_active)
+        txtCupAssist.alpha = 1f
+        txtCupAssist.scaleX = 1f
+        txtCupAssist.scaleY = 1f
+        txtCupAssist.animate()
+            .scaleX(1.08f)
+            .scaleY(1.08f)
+            .setDuration(90L)
+            .withEndAction {
+                txtCupAssist.animate()
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .setDuration(120L)
+                    .withEndAction {
+                        if (txtCupAssist.visibility == View.VISIBLE) {
+                            txtCupAssist.text = getString(R.string.cup_auto_active_short)
+                        }
+                    }
+                    .start()
+            }
+            .start()
+        txtCupAssist.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+    }
+
+    private fun updateCupDebugDots(show: Boolean) {
+        if (!show) {
+            dotYolo.visibility = View.GONE
+            dotHit.visibility = View.GONE
+            dotRoi.visibility = View.GONE
+            return
+        }
+        placeDebugDot(dotRoi, cupDebugRoiPoint, Color.WHITE)
+        placeDebugDot(dotYolo, cupDebugYoloPoint, Color.parseColor("#F44336"))
+        placeDebugDot(dotHit, cupDebugHitPoint, Color.parseColor("#18A558"))
+    }
+
+    private fun placeDebugDot(view: View, point: PointF?, color: Int) {
+        if (point == null) {
+            view.visibility = View.GONE
+            return
+        }
+        val root = findViewById<View>(android.R.id.content)
+        val rootLoc = IntArray(2)
+        root.getLocationOnScreen(rootLoc)
+        view.setBackgroundColor(color)
+        view.visibility = View.VISIBLE
+        view.translationX = point.x - rootLoc[0] - (view.width * 0.5f)
+        view.translationY = point.y - rootLoc[1] - (view.height * 0.5f)
     }
 
     private fun runNgShakeOnce() {
@@ -1675,6 +2129,15 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"multiRayEstimatedDistance_m\":").append(String.format(Locale.US, "%.3f", cupMultiRayEstimatedDistanceMeters ?: 0f)).append(",")
         sb.append("\"multiRayProjectedCupPx\":").append(String.format(Locale.US, "%.1f", cupMultiRayProjectedCupPx ?: 0f)).append(",")
         sb.append("\"multiRayCenterFallbackUsed\":").append(if (cupMultiRayCenterFallbackUsed == true) "true" else "false")
+        sb.append(",\"yolo\":{")
+        sb.append("\"assistActiveAtLock\":").append(cupYoloAssistActiveAtLock).append(",")
+        sb.append("\"stableFramesAtLock\":").append(cupYoloStableFramesAtLock).append(",")
+        sb.append("\"activationCount\":").append(cupYoloActivationCount).append(",")
+        sb.append("\"deactivationConsecutiveMissCount\":").append(cupYoloDeactivationConsecutiveMissCount).append(",")
+        sb.append("\"confThreshold\":").append(String.format(Locale.US, "%.2f", CUP_YOLO_CONF_THRESHOLD)).append(",")
+        sb.append("\"stableFramesOn\":").append(CUP_YOLO_STABLE_FRAMES_ON).append(",")
+        sb.append("\"consecutiveMissToOff\":").append(CUP_YOLO_CONSECUTIVE_MISS_TO_OFF)
+        sb.append("}")
 
         // Always-on diagnostics (use UiModel values directly; do NOT rely on END_LOCKED capture vars).
         fun appendJsonStringOrNull(key: String, value: String?) {
@@ -1969,6 +2432,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val intent =
             android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                 type = "application/json"
+                `package` = "com.google.android.gm"
                 putExtra(android.content.Intent.EXTRA_EMAIL, arrayOf(feedbackEmailTo))
                 putExtra(android.content.Intent.EXTRA_SUBJECT, subject)
                 putExtra(android.content.Intent.EXTRA_TEXT, body)
@@ -1977,7 +2441,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             }
 
         try {
-            startActivity(android.content.Intent.createChooser(intent, getString(R.string.menu_send_feedback)))
+            startActivity(intent)
         } catch (_: Exception) {
             Toast.makeText(this, getString(R.string.feedback_toast_no_email_app), Toast.LENGTH_SHORT).show()
         }
@@ -2048,6 +2512,39 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"rotationDeg\": ").append(screenRotDeg.toInt()).append(", ")
         sb.append("\"mirrorH\": ").append(screenMirrorH).append(", ")
         sb.append("\"mirrorV\": ").append(screenMirrorV)
+        sb.append("},\n")
+
+        fun appendPointOrNullJson(p: PointF?): String {
+            return if (p == null) {
+                "null"
+            } else {
+                "{\"x\":${String.format(Locale.US, "%.1f", p.x)},\"y\":${String.format(Locale.US, "%.1f", p.y)}}"
+            }
+        }
+
+        val yoloHitDeltaPx =
+            if (cupDebugYoloPoint != null && cupDebugHitPoint != null) {
+                val dx = cupDebugYoloPoint!!.x - cupDebugHitPoint!!.x
+                val dy = cupDebugYoloPoint!!.y - cupDebugHitPoint!!.y
+                kotlin.math.sqrt(dx * dx + dy * dy)
+            } else {
+                null
+            }
+        sb.append("  \"yoloDebug\": {")
+        sb.append("\"cupAssistActive\": ").append(cupYoloAssistActive).append(", ")
+        sb.append("\"yoloStableFrames\": ").append(cupYoloStableFrames).append(", ")
+        sb.append("\"yoloConsecutiveMisses\": ").append(cupYoloConsecutiveMisses).append(", ")
+        sb.append("\"yoloActivationCount\": ").append(cupYoloActivationCount).append(", ")
+        sb.append("\"yoloDeactivationConsecutiveMissCount\": ").append(cupYoloDeactivationConsecutiveMissCount).append(", ")
+        sb.append("\"yoloAssistActiveAtLock\": ").append(cupYoloAssistActiveAtLock).append(", ")
+        sb.append("\"yoloStableFramesAtLock\": ").append(cupYoloStableFramesAtLock).append(", ")
+        sb.append("\"yoloConfThreshold\": ").append(String.format(Locale.US, "%.2f", CUP_YOLO_CONF_THRESHOLD)).append(", ")
+        sb.append("\"yoloStableFramesOn\": ").append(CUP_YOLO_STABLE_FRAMES_ON).append(", ")
+        sb.append("\"yoloConsecutiveMissToOff\": ").append(CUP_YOLO_CONSECUTIVE_MISS_TO_OFF).append(", ")
+        sb.append("\"yoloCenterPx\": ").append(appendPointOrNullJson(cupDebugYoloPoint)).append(", ")
+        sb.append("\"hitCenterPx\": ").append(appendPointOrNullJson(cupDebugHitPoint)).append(", ")
+        sb.append("\"roiCenterPx\": ").append(appendPointOrNullJson(cupDebugRoiPoint)).append(", ")
+        sb.append("\"yoloHitDeltaPx\": ").append(if (yoloHitDeltaPx == null) "null" else String.format(Locale.US, "%.2f", yoloHitDeltaPx))
         sb.append("},\n")
 
         // Include field-test measurement logs (JSONL) for easy sharing.
