@@ -49,6 +49,7 @@ class LegacyPoseEngine : MeasurementEngine {
             bufSize = null,
             sigmaOkConsecutive = null,
             sigmaOkElapsedMs = null,
+            cupSigmaNearHoldCount = null,
             sigmaCurrentCmEnd = null,
             sigmaThresholdCmEnd = null,
             liveSource = null,

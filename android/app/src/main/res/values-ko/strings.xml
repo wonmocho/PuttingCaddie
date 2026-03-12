@@ -8,8 +8,9 @@
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
     <!-- 골프 안내문구 (한국어 로케일) -->
-    <string name="greeniq_hint_ball">공을 중앙 목표에 맞추고 BALL을 누르세요</string>
+    <string name="greeniq_hint_ball">Ball을 중앙에 맞추고 BALL을 누르세요</string>
     <string name="greeniq_hint_cup">컵을 중앙에 맞추고 CUP을 누르세요</string>
+    <string name="greeniq_hint_cup_realign">Ball을 먼저 찍은 후 컵이 잘 보이는 위치에서 Cup을 누르세요</string>
     <string name="greeniq_hint_done">↺를 눌러 리셋</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">추가 옵션</string>
@@ -93,7 +94,7 @@
 
     <!-- Measurement guide bottom sheet -->
     <string name="measurement_guide_title">🧭 측정 가이드</string>
-    <string name="measurement_guide_body">1. 공을 중앙 목표 링에 맞추고 BALL 버튼을 누르세요.\n\n2. 카메라를 컵 방향으로 비추어\n   컵을 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n\n3. 컵이 멀어 중앙에 맞추기 어려운 경우,\n   2~3m 정도 컵에 근접한 뒤 다시 맞추어 측정하세요.\n\n4. FINAL 값이 표시되면 측정이 완료됩니다.\n\n※ 10m 이내 사용을 권장합니다.\n※ Tracking GOOD 상태에서 측정하세요.\n※ 잔디 상태와 조명에 따라 정확도가 달라질 수 있습니다.</string>
+    <string name="measurement_guide_body">1. 공을 화면 중앙 목표 링에 맞추고 BALL 버튼을 누르세요.\n\n2. 카메라를 컵 방향으로 비추어 컵을 화면 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n\n3. 컵이 멀어 식별하기 어려운 경우, 컵 방향으로 이동하여 약 5m 정도까지 컵에 가까이 간 뒤 다시 맞추어 CUP 버튼을 누르세요.\n\n4. FINAL 값이 표시되면 측정이 완료됩니다.\n\n* 10m 이내 사용을 권장합니다.\n* Tracking GOOD 상태에서 측정하세요.\n* 잔디 상태와 조명에 따라 정확도가 달라질 수 있습니다.</string>
 
     <!-- Feedback / survey -->
     <string name="feedback_survey_title">측정이 안정적으로 느껴지셨나요?</string>

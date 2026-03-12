@@ -2,10 +2,8 @@
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
 
-    <gradient
-        android:startColor="#66000000"
-        android:endColor="#33000000"
-        android:angle="90" />
+    <!-- 야외 햇빛 가시성: black ~0.45 opacity -->
+    <solid android:color="#73000000" />
 
     <corners android:radius="18dp" />
 

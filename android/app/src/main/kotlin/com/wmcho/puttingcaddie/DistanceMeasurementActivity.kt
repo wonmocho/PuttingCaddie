@@ -91,6 +91,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
         // YOLO cup assist: false = 완전 배제 (수동 조준만)
         private const val CUP_YOLO_ENABLED = false
+        // Zoom UI: false = 비활성화 (엔진 준비 전까지 숨김, 코드 유지)
+        private const val ZOOM_UI_ENABLED = false
         // YOLO cup assist tuning (골프장=엄격 검출만 AUTO, 일반환경=수동 위주)
         private const val CUP_YOLO_CONF_THRESHOLD = 0.72f
         private const val CUP_YOLO_IOU_THRESHOLD = 0.45f
@@ -965,8 +967,17 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
     }
 
+    // 야외 햇빛 가시성: 측정 화면 진입 시 밝기 100%, 종료 시 복구
+    private var savedScreenBrightness: Float? = null
+
     override fun onResume() {
         super.onResume()
+        runCatching {
+            val attrs = window.attributes
+            savedScreenBrightness = attrs.screenBrightness
+            attrs.screenBrightness = 1.0f
+            window.attributes = attrs
+        }
         previewGlView?.onResume()
         updateLastUseNow()
         scheduleSurveyCheckIfNeeded()
@@ -982,6 +993,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
     override fun onPause() {
         super.onPause()
+        runCatching {
+            savedScreenBrightness?.let { saved ->
+                val attrs = window.attributes
+                attrs.screenBrightness = saved
+                window.attributes = attrs
+                savedScreenBrightness = null
+            }
+        }
         previewGlView?.onPause()
         // Keep last use up-to-date for survey2 gating.
         updateLastUseNow()
@@ -1315,16 +1334,26 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
 
         // Golf hint text (keep it simple; no technical box)
+        val cupTooSmall = ui.multiRayProjectedCupPx != null && ui.multiRayProjectedCupPx!! < 22f
         txtInstruction.text =
             when (ui.engineState) {
                 V31StateMachine.State.IDLE,
                 V31StateMachine.State.AIM_START,
                 V31StateMachine.State.STABILIZING_START,
-                V31StateMachine.State.START_LOCKED,
-                V31StateMachine.State.FAIL -> getString(R.string.greeniq_hint_ball)
+                V31StateMachine.State.START_LOCKED -> getString(R.string.greeniq_hint_ball)
+
+                V31StateMachine.State.FAIL ->
+                    if (ui.failDetailCode == "CUP_LOW_VALID_500MS" || ui.failDetailCode == "CUP_PENDING_TIMEOUT_3S") {
+                        getString(R.string.greeniq_hint_cup_realign)
+                    } else {
+                        getString(R.string.greeniq_hint_ball)
+                    }
 
                 V31StateMachine.State.AIM_END,
-                V31StateMachine.State.STABILIZING_END,
+                V31StateMachine.State.STABILIZING_END ->
+                    if (cupTooSmall) getString(R.string.greeniq_hint_cup_realign)
+                    else getString(R.string.greeniq_hint_cup)
+
                 V31StateMachine.State.END_LOCKED -> getString(R.string.greeniq_hint_cup)
 
                 V31StateMachine.State.RESULT -> getString(R.string.greeniq_hint_done)
@@ -1573,8 +1602,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             ui.engineState == V31StateMachine.State.AIM_END ||
                 ui.engineState == V31StateMachine.State.STABILIZING_END ||
                 ui.engineState == V31StateMachine.State.END_LOCKED
-        txtZoomRatio.visibility = if (inCupPhase) View.VISIBLE else View.GONE
-        layoutZoomButtons.visibility = if (inCupPhase) View.VISIBLE else View.GONE
+        txtZoomRatio.visibility = if (ZOOM_UI_ENABLED && inCupPhase) View.VISIBLE else View.GONE
+        layoutZoomButtons.visibility = if (ZOOM_UI_ENABLED && inCupPhase) View.VISIBLE else View.GONE
 
         viewFinder?.let { vf ->
             vf.setState(ui.viewFinderState)
@@ -1979,7 +2008,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         while (recentSessions.size > 5) recentSessions.removeFirst()
     }
 
-    private fun measurementLogFile(): File = File(filesDir, "GIQ_measurements.jsonl")
+    private fun measurementLogFile(): File {
+        val dateStr = java.text.SimpleDateFormat("yyyyMMdd", Locale.US).format(java.util.Date())
+        return File(filesDir, "PC_measurements_${dateStr}.jsonl")
+    }
 
     private fun escJson(s: String): String =
         s.replace("\\", "\\\\")
@@ -2171,6 +2203,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         appendJsonIntOrNull("sigmaOkConsecutive", ui.sigmaOkConsecutive)
         sb.append(',')
         sb.append("\"sigmaOkElapsedMs\":").append(ui.sigmaOkElapsedMs ?: "null")
+        sb.append(',')
+        appendJsonIntOrNull("cupSigmaNearHoldCount", ui.cupSigmaNearHoldCount)
         sb.append(',')
         appendJsonFloatOrNull("sigmaCurrent_cm", ui.sigmaCurrentCmEnd)
         sb.append(',')
@@ -2426,7 +2460,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 return
             }
 
-        val subject = "[GreenIQ Distance Feedback] ${android.os.Build.MODEL} / ${appVersionName()}"
+        val subject = "[PuttingCaddy Feedback] ${android.os.Build.MODEL} / ${appVersionName()}"
         val body = buildEmailBodyText(surveyChoice)
 
         val intent =
@@ -2489,7 +2523,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
     private fun buildFeedbackLogFile(surveyChoice: String?): File {
         val ts = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
-        val f = File(cacheDir, "GIQ_feedback_${ts}.json")
+        val f = File(cacheDir, "PC_feedback_${ts}.json")
 
         fun esc(s: String): String =
             s.replace("\\", "\\\\")

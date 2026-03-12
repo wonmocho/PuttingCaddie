@@ -23,61 +23,40 @@ class ViewFinderView @JvmOverloads constructor(
     private fun dp(v: Float): Float = v * context.resources.displayMetrics.density
     private fun sp(v: Float): Float = v * context.resources.displayMetrics.scaledDensity
 
-    // Golf UI: keep the square frame very subtle; emphasize the center target ring.
+    // 야외 햇빛 가시성: 형광 링 조준표시 (lime #B4FF00, 4px, glow)
     private val strokeDefaultPx = dp(1f)
     private val strokeStabilizingPx = dp(1.5f)
     private val strokeFlashPx = dp(2.5f)
-    private val crossStrokePx = dp(1.5f)
-    private val ringStrokePx = dp(2.5f)
+    private val ringStrokePx = dp(4f)  // 햇빛에서 잘 보이도록 4px
+    private val ringRadiusPx = dp(28f)
+    private val LIME_COLOR = Color.parseColor("#B4FF00")
 
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = strokeDefaultPx
         color = Color.WHITE
     }
-    private val crossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = crossStrokePx
-        color = Color.WHITE
-        alpha = 180 // ~0.7
-        strokeCap = Paint.Cap.SQUARE
-    }
-    private val crossOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = crossStrokePx + dp(1f)
-        color = Color.BLACK
-        alpha = 110
-        strokeCap = Paint.Cap.SQUARE
-    }
-    private val qualityPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.parseColor("#4CAF50")
-        alpha = 230 // 0.9
-        isSubpixelText = true
-    }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = ringStrokePx
-        color = Color.WHITE
+        color = LIME_COLOR
+    }
+    private val ringGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = ringStrokePx + dp(4f)
+        color = LIME_COLOR
+        alpha = 60
     }
     private val ringOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = ringStrokePx + dp(1f)
+        strokeWidth = ringStrokePx + dp(1.5f)
         color = Color.BLACK
-        alpha = 110
+        alpha = 140
     }
-    private val innerDotStrokePx = dp(1.2f)
-    private val innerDotRadiusPx = dp(7f)
-    private val innerDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = innerDotStrokePx
-        color = Color.WHITE
-    }
-    private val innerDotOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = innerDotStrokePx + dp(1f)
-        color = Color.BLACK
-        alpha = 110
+    private val centerDotRadiusPx = dp(3f)  // 6px diameter
+    private val centerDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = LIME_COLOR  // 야외 가시성: 링과 동일 형광 lime
     }
 
     private var state: State = State.DEFAULT
@@ -163,38 +142,18 @@ class ViewFinderView @JvmOverloads constructor(
 
         canvas.drawRect(rect, borderPaint)
 
-        // Center ring (golf aiming aid) - primary target element.
+        // 야외 햇빛 가시성: 형광 링 항상 lime (#B4FF00) - 햇빛에서 잘 보이도록
         val cx = width * 0.5f
         val cy = height * 0.5f
-        ringPaint.color = currentColor
-        ringPaint.strokeWidth = ringStrokePx
-        val screenW = context.resources.displayMetrics.widthPixels.toFloat().coerceAtLeast(1f)
-        val wantedRadius = (screenW * 0.12f) * 0.5f
-        val maxRadius = (kotlin.math.min(rect.width(), rect.height()) * 0.45f).coerceAtLeast(dp(12f))
-        val radius = wantedRadius.coerceAtMost(maxRadius)
+        ringPaint.color = LIME_COLOR
+        ringPaint.alpha = if (inFlash) 255 else 255
+        ringGlowPaint.color = LIME_COLOR
+        ringGlowPaint.alpha = 80
+        val radius = ringRadiusPx.coerceAtMost(kotlin.math.min(rect.width(), rect.height()) * 0.4f)
+        canvas.drawCircle(cx, cy, radius, ringGlowPaint)
         canvas.drawCircle(cx, cy, radius, ringOutlinePaint)
         canvas.drawCircle(cx, cy, radius, ringPaint)
-
-        // Crosshair: slightly longer (requested), still centered on the ring.
-        val hLen = max(radius * 1.25f, dp(14f))
-        val vLen = max(radius * 1.75f, dp(18f))
-        val baseAlpha = 150
-        val alphaBoost = if (state == State.STABILIZING) 30 else 0
-        crossPaint.color = currentColor
-        crossPaint.alpha = (baseAlpha + alphaBoost).coerceAtMost(255)
-        crossOutlinePaint.alpha = (crossPaint.alpha * 0.75f).toInt().coerceIn(0, 255)
-        canvas.drawLine(cx - hLen, cy, cx + hLen, cy, crossOutlinePaint)
-        canvas.drawLine(cx, cy - vLen, cx, cy + vLen, crossOutlinePaint)
-        canvas.drawLine(cx - hLen, cy, cx + hLen, cy, crossPaint)
-        canvas.drawLine(cx, cy - vLen, cx, cy + vLen, crossPaint)
-
-        // 중심점: 십자가 교차부에 아주 작은 동그라미 (선 굵기 < 십자가)
-        innerDotPaint.color = currentColor
-        innerDotPaint.strokeWidth = innerDotStrokePx
-        innerDotPaint.alpha = crossPaint.alpha
-        innerDotOutlinePaint.alpha = (crossPaint.alpha * 0.75f).toInt().coerceIn(0, 255)
-        canvas.drawCircle(cx, cy, innerDotRadiusPx, innerDotOutlinePaint)
-        canvas.drawCircle(cx, cy, innerDotRadiusPx, innerDotPaint)
+        canvas.drawCircle(cx, cy, centerDotRadiusPx, centerDotPaint)
 
         if (now <= flashUntilMs || (colorAnim?.isRunning == true)) {
             postInvalidateOnAnimation()

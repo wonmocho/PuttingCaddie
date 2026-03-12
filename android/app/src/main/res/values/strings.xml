@@ -8,8 +8,9 @@
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
     <!-- Golf hints (English locale) -->
-    <string name="greeniq_hint_ball">Align ball in the target and tap BALL</string>
-    <string name="greeniq_hint_cup">Align cup in the target and tap CUP</string>
+    <string name="greeniq_hint_ball">Align ball in center and tap BALL</string>
+    <string name="greeniq_hint_cup">Align cup in center and tap CUP</string>
+    <string name="greeniq_hint_cup_realign">Tap BALL first, then tap CUP from where the cup is clearly visible.</string>
     <string name="greeniq_hint_done">Tap ↺ to reset</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">More options</string>
@@ -93,7 +94,7 @@
 
     <!-- Measurement guide bottom sheet -->
     <string name="measurement_guide_title">🧭 Measurement Guide</string>
-    <string name="measurement_guide_body">1. Align the ball in the center target ring and tap BALL.\n\n2. Point the camera toward the cup.\n   Align the cup in the center target ring, then tap CUP.\n\n3. If the cup is too far to align in the center,\n   move closer by about 2–3 m and measure again.\n\n4. When FINAL is shown, the measurement is complete.\n\n※ Recommended within 10 m.\n※ Measure when Tracking is GOOD.\n※ Accuracy may vary depending on grass and lighting.</string>
+    <string name="measurement_guide_body">1. Align the ball in the center of the screen target ring and tap BALL.\n\n2. Point the camera toward the cup. Align the cup in the center of the screen target ring, then tap CUP.\n\n3. If the cup is hard to identify because it\'s far away, move toward the cup until you\'re about 5 m away, then align again and tap CUP.\n\n4. When FINAL is shown, the measurement is complete.\n\n* Recommended within 10 m.\n* Measure when Tracking is GOOD.\n* Accuracy may vary depending on grass and lighting.</string>
 
     <!-- Feedback / survey -->
     <string name="feedback_survey_title">Did the measurement feel stable?</string>

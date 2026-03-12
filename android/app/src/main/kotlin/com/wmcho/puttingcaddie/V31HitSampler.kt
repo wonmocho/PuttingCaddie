@@ -223,7 +223,8 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         maxHitDistanceMeters: Float = 12f,
         yBelowCameraMeters: Float = 0.1f,
         preferUpwardFacing: Boolean = true,
-        requireUpwardFacing: Boolean = false
+        requireUpwardFacing: Boolean = false,
+        forceFar5x5: Boolean = false
     ): Sample {
         val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
         val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
@@ -251,16 +252,7 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             )
         val dMeters = (centerHit?.distance ?: maxHitDistanceMeters).coerceIn(0.3f, 10f)
 
-        // 2) Mode selection by distance
-        val plan =
-            when {
-                dMeters < 1.0f -> Plan("NEAR_7x7", 7, 7, 0.80f)
-                dMeters < 3.0f -> Plan("MID_5x5", 5, 5, 0.70f)
-                dMeters < 6.0f -> Plan("FAR_3x3", 3, 3, 0.60f)
-                else -> Plan("ULTRA_LINE_5", 5, 1, 0.55f) // 6~10m: keep minimal samples, maximize hit availability
-            }
-
-        // 3) Compute projected cup size in view pixels (keep Float throughout).
+        // 2) Compute projected cup size in view pixels (keep Float throughout).
         // Fallback to view-percent span if intrinsics/dims are unavailable.
         val intr = frame.camera.textureIntrinsics
         val dims = intr.imageDimensions
@@ -279,6 +271,16 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 null
             }
 
+        // 3) Mode selection by distance and explicit far expansion request.
+        // Policy: stop relying on ULTRA_LINE_5 alone; prefer spatial sampling in far range.
+        val plan =
+            when {
+                forceFar5x5 -> Plan("FAR_5x5", 5, 5, 0.65f)
+                dMeters < 1.0f -> Plan("NEAR_7x7", 7, 7, 0.80f)
+                dMeters < 3.0f -> Plan("MID_5x5", 5, 5, 0.70f)
+                else -> Plan("FAR_3x3", 3, 3, 0.60f)
+            }
+
         val maxSpanPx = (min(glW, glH) * 0.25f).coerceAtLeast(MIN_GRID_SPAN_PX)
         val spanCandidate =
             (projectedCupPxView?.let { it * plan.spanRatio })
@@ -286,7 +288,16 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
 
         val minSpanForStepX = if (plan.gridX <= 1) 0f else MIN_STEP_PX * (plan.gridX - 1).toFloat()
         val minSpanForStepY = if (plan.gridY <= 1) 0f else MIN_STEP_PX * (plan.gridY - 1).toFloat()
-        val minSpanPx = max(MIN_GRID_SPAN_PX, max(minSpanForStepX, minSpanForStepY))
+        val zoomLevel = currentZoomLevel()
+        val zoomedSmallProjected =
+            zoomLevel >= 2.9f &&
+                plan.name == "FAR_3x3" &&
+                projectedCupPxView != null &&
+                projectedCupPxView.isFinite() &&
+                projectedCupPxView < 30f
+        // In 3x + tiny projected cup, widen FAR_3x3 span to secure enough valid samples.
+        val minGridSpanPxDynamic = if (zoomedSmallProjected) 18f else MIN_GRID_SPAN_PX
+        val minSpanPx = max(minGridSpanPxDynamic, max(minSpanForStepX, minSpanForStepY))
         val spanPx = spanCandidate.coerceIn(minSpanPx, maxSpanPx)
 
         val gridHalfX = if (plan.gridX <= 1) 0f else (spanPx * 0.5f)
