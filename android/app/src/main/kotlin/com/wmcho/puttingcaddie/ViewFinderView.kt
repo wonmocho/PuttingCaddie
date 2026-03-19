@@ -26,7 +26,7 @@ class ViewFinderView @JvmOverloads constructor(
     // 야외 햇빛 가시성: 형광 링 조준표시 (lime #B4FF00, 4px, glow)
     private val strokeDefaultPx = dp(1f)
     private val strokeStabilizingPx = dp(1.5f)
-    private val strokeFlashPx = dp(2.5f)
+    private val strokeFlashPx = dp(5f)  // capture 시 강조: 더 굵게
     private val ringStrokePx = dp(4f)  // 햇빛에서 잘 보이도록 4px
     private val ringRadiusPx = dp(28f)
     private val LIME_COLOR = Color.parseColor("#B4FF00")
@@ -68,6 +68,9 @@ class ViewFinderView @JvmOverloads constructor(
     private var colorAnim: ValueAnimator? = null
 
     private val rect = RectF()
+    private val flashOverlayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
 
     fun setState(s: State) {
         state = s
@@ -83,13 +86,13 @@ class ViewFinderView @JvmOverloads constructor(
 
     fun flashLock() {
         flashColor = Color.parseColor("#4CAF50")
-        flashUntilMs = SystemClock.uptimeMillis() + 300L
+        flashUntilMs = SystemClock.uptimeMillis() + 500L  // 300→500: 더 오래 보이도록
         invalidate()
     }
 
     fun flashFail() {
         flashColor = Color.parseColor("#F44336")
-        flashUntilMs = SystemClock.uptimeMillis() + 300L
+        flashUntilMs = SystemClock.uptimeMillis() + 500L
         invalidate()
     }
 
@@ -123,6 +126,13 @@ class ViewFinderView @JvmOverloads constructor(
         }
 
         val inFlash = now <= flashUntilMs
+        val flashElapsed = if (inFlash) flashUntilMs - now else 0L
+        val flashStart = flashUntilMs - 500L
+        val flashOverlayAlpha = when {
+            inFlash && now < flashStart + 100 -> 70  // 첫 100ms 가장 밝게
+            inFlash -> (20 + (flashElapsed / 500f) * 50).toInt().coerceIn(15, 70)  // 서서히 감쇠
+            else -> 0
+        }
         borderPaint.strokeWidth =
             when {
                 inFlash -> strokeFlashPx
@@ -140,15 +150,21 @@ class ViewFinderView @JvmOverloads constructor(
         val inset = borderPaint.strokeWidth * 0.5f
         rect.set(inset, inset, width.toFloat() - inset, height.toFloat() - inset)
 
+        // capture 시 강조: 사각 위 반짝 오버레이 (카메라 찍힘 느낌)
+        if (flashOverlayAlpha > 0) {
+            flashOverlayPaint.color = flashColor
+            flashOverlayPaint.alpha = flashOverlayAlpha
+            canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), flashOverlayPaint)
+        }
         canvas.drawRect(rect, borderPaint)
 
         // 야외 햇빛 가시성: 형광 링 항상 lime (#B4FF00) - 햇빛에서 잘 보이도록
         val cx = width * 0.5f
         val cy = height * 0.5f
         ringPaint.color = LIME_COLOR
-        ringPaint.alpha = if (inFlash) 255 else 255
+        ringPaint.alpha = 255
         ringGlowPaint.color = LIME_COLOR
-        ringGlowPaint.alpha = 80
+        ringGlowPaint.alpha = if (inFlash) 140 else 80  // flash 시 링 glow 강화
         val radius = ringRadiusPx.coerceAtMost(kotlin.math.min(rect.width(), rect.height()) * 0.4f)
         canvas.drawCircle(cx, cy, radius, ringGlowPaint)
         canvas.drawCircle(cx, cy, radius, ringOutlinePaint)

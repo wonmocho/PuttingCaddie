@@ -9,9 +9,14 @@
     <string name="greeniq_label_final">FINAL</string>
     <!-- Golf hints (English locale) -->
     <string name="greeniq_hint_ball">Align ball in center and tap BALL</string>
-    <string name="greeniq_hint_cup">Align cup in center and tap CUP</string>
+    <string name="greeniq_hint_cup">Align the cup in the center target ring and tap CUP.\nIf the cup looks small, move toward it and tap again.</string>
     <string name="greeniq_hint_cup_realign">Tap BALL first, then tap CUP from where the cup is clearly visible.</string>
     <string name="greeniq_hint_done">Tap ↺ to reset</string>
+    <!-- BALL 준비 안내 (버튼 비활성 시) -->
+    <string name="ball_hint_tracking">Measure when Tracking is GOOD</string>
+    <string name="ball_hint_warmup">Slowly scan the floor left and right</string>
+    <string name="ball_hint_distance">Move back; ball is too close</string>
+    <string name="ball_hint_hits">Hold the ball steady, then tap BALL</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">More options</string>
     <string name="cd_settings">Settings</string>

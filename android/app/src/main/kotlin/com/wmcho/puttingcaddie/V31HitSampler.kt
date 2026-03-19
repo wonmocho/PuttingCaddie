@@ -1,6 +1,7 @@
 package com.wmcho.puttingcaddie
 
 import android.graphics.PointF
+import android.util.Log
 import android.graphics.RectF
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
@@ -35,7 +36,9 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val gridPlan: String? = null,
         val gridEstimatedDistanceMeters: Float? = null,
         val gridProjectedCupPx: Float? = null,
-        val centerFallbackUsed: Boolean? = null
+        val centerFallbackUsed: Boolean? = null,
+        // BALL only (gridCount==9): rejection reason when bestHit is null
+        val ballSampleRejectionReason: String? = null
     )
 
     private data class Candidate(
@@ -515,6 +518,7 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
 
         // Now iterate points and do hitTest at adjusted view coords
         var pointIndex = 0
+        var planeRejectedByPolygonCount = 0
         for (pt in samplePoints) {
                 val xScreen = pt.x
                 val yScreen = pt.y
@@ -532,10 +536,14 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 for (r in results) {
                     val t = r.trackable
                     if (t is InstantPlacementPoint) continue
-                    if (t is Plane && t.isPoseInPolygon(r.hitPose)) {
-                        chosen = r
-                        chosenType = HitType.PLANE
-                        break
+                    if (t is Plane) {
+                        if (t.isPoseInPolygon(r.hitPose)) {
+                            chosen = r
+                            chosenType = HitType.PLANE
+                            break
+                        } else {
+                            planeRejectedByPolygonCount++
+                        }
                     }
                 }
 
@@ -596,7 +604,13 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             bestPlane != null -> Sample(bestPlane, HitType.PLANE, planeValid, samplePoints.size)
             bestDepth != null -> Sample(bestDepth, HitType.DEPTH, depthValid, samplePoints.size)
             bestPoint != null -> Sample(bestPoint, HitType.POINT, pointValid, samplePoints.size)
-            else -> Sample(null, HitType.NONE, max(planeValid, max(depthValid, pointValid)), samplePoints.size)
+            else -> {
+                val rejectionReason = if (planeRejectedByPolygonCount > 0) "planeOutsidePolygon" else "noHit"
+                if (gridCount == 9) {
+                    Log.d("BALL_SAMPLE_REJECT", "reason=$rejectionReason planeRejectedByPolygon=$planeRejectedByPolygonCount validHits=${max(planeValid, max(depthValid, pointValid))}")
+                }
+                Sample(null, HitType.NONE, max(planeValid, max(depthValid, pointValid)), samplePoints.size, ballSampleRejectionReason = rejectionReason)
+            }
         }
     }
 

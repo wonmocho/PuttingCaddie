@@ -1335,8 +1335,30 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
         // Golf hint text (keep it simple; no technical box)
         val cupTooSmall = ui.multiRayProjectedCupPx != null && ui.multiRayProjectedCupPx!! < 22f
-        txtInstruction.text =
-            when (ui.engineState) {
+        // BALL 비활성 시: blockedReason 1개만 표시 (디버그=상세, 릴리즈=안내문구)
+        val ballHintResId = when (ui.ballBlockedReason) {
+            "tracking_not_ready" -> R.string.ball_hint_tracking
+            "warmup_not_ready" -> R.string.ball_hint_warmup
+            "too_close_distance_not_ready" -> R.string.ball_hint_distance
+            "insufficient_stable_hits" -> R.string.ball_hint_hits
+            else -> null
+        }
+        // C. 개발 빌드: BALL/CUP 버튼 막힌 이유 및 0m 결과 표시
+        txtInstruction.text = when {
+            isDebuggableBuild() && !ui.startEnabled && ui.ballBlockedReason != null -> {
+                val hits = ui.ballArWarmupSuccessCount?.let { s -> ui.ballArWarmupRequired?.let { r -> " hits=$s/$r" } ?: "" } ?: ""
+                "DEBUG: BALL blocked=${ui.ballBlockedReason}$hits"
+            }
+            isDebuggableBuild() && !ui.finishEnabled && ui.cupBlockedReason != null &&
+                (ui.engineState == V31StateMachine.State.AIM_END || ui.engineState == V31StateMachine.State.FAIL) ->
+                "DEBUG: [CUP] blocked: ${ui.cupBlockedReason}"
+            isDebuggableBuild() && ui.engineState == V31StateMachine.State.RESULT &&
+                (ui.distanceMeters <= 0f || !ui.distanceMeters.isFinite()) ->
+                "DEBUG: [CUP] result: zero_default"
+            !ui.startEnabled && ballHintResId != null &&
+                (ui.engineState == V31StateMachine.State.IDLE || ui.engineState == V31StateMachine.State.AIM_START) ->
+                getString(ballHintResId)
+            else -> when (ui.engineState) {
                 V31StateMachine.State.IDLE,
                 V31StateMachine.State.AIM_START,
                 V31StateMachine.State.STABILIZING_START,
@@ -1358,6 +1380,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
                 V31StateMachine.State.RESULT -> getString(R.string.greeniq_hint_done)
             }
+        }
 
         btnStart.isEnabled = ui.startEnabled
         btnFinish.isEnabled = ui.finishEnabled

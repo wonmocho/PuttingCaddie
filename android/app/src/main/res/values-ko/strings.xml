@@ -9,9 +9,14 @@
     <string name="greeniq_label_final">FINAL</string>
     <!-- 골프 안내문구 (한국어 로케일) -->
     <string name="greeniq_hint_ball">Ball을 중앙에 맞추고 BALL을 누르세요</string>
-    <string name="greeniq_hint_cup">컵을 중앙에 맞추고 CUP을 누르세요</string>
+    <string name="greeniq_hint_cup">컵을 화면 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n컵이 작게 보이면 컵 쪽으로 이동해 다시 누르세요.</string>
     <string name="greeniq_hint_cup_realign">Ball을 먼저 찍은 후 컵이 잘 보이는 위치에서 Cup을 누르세요</string>
     <string name="greeniq_hint_done">↺를 눌러 리셋</string>
+    <!-- BALL 준비 안내 (버튼 비활성 시) -->
+    <string name="ball_hint_tracking">Tracking GOOD 상태에서 측정하세요</string>
+    <string name="ball_hint_warmup">바닥을 천천히 좌우로 비춰 주세요</string>
+    <string name="ball_hint_distance">거리가 너무 가깝습니다. 멀리서 다시 시도하세요</string>
+    <string name="ball_hint_hits">공을 안정적으로 맞춘 후 BALL을 누르세요</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">추가 옵션</string>
     <string name="cd_settings">설정</string>

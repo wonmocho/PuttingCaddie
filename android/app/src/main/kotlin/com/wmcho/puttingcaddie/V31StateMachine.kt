@@ -32,6 +32,12 @@ class V31StateMachine(
     // Debug-only diagnostics for XYZ H/V issues (no UI exposure).
     private var dbgLastHvLogNs: Long = 0L
     private var dbgLastZoomHitLogNs: Long = 0L
+    private var lastBallEnableGateLogNs: Long = 0L
+    private var lastBallSampleRejectJumpNs: Long = 0L
+    // CUP debug: CUP_* logs use debugLoggingEnabled (isDebuggableBuild). Release: no CUP logs.
+    private var lastCupEnableGateLogNs: Long = 0L
+    private var lastCupDetectStateLogNs: Long = 0L
+    private var lastCupFixAttemptLogNs: Long = 0L
     private var dbgPrevH: Float = Float.NaN
     private var dbgPrevV: Float = Float.NaN
 
@@ -166,7 +172,13 @@ class V31StateMachine(
         val finishEnabled: Boolean,
         val statusWantsMoveDeviceText: Boolean,
         val isResultFinal: Boolean,
-        val isMeasuringFlow: Boolean
+        val isMeasuringFlow: Boolean,
+            // Debug: BALL 버튼 막힌 이유 (개발 빌드에서만 표시)
+        val ballBlockedReason: String? = null,
+        val ballArWarmupSuccessCount: Int? = null,
+        val ballArWarmupRequired: Int? = null,
+        // Debug: CUP 버튼 막힌 이유 (개발 빌드에서만 표시)
+        val cupBlockedReason: String? = null
     )
 
     // v3.1 constants
@@ -177,6 +189,9 @@ class V31StateMachine(
 
     // END tuning (Cup): cap samples to reduce far-distance timeouts.
     private val END_MAX_MIN_SAMPLES = 18
+    // CUP 1차: 원거리 sigma 완화 (ball-to-cup 기준 6m 이상)
+    private val CUP_SIGMA_RELAX_FROM_DISTANCE_M = 6.0f
+    private val CUP_SIGMA_FAR_RELAX_CM = 0.015f  // 6m+ 구간에서 threshold +1.5cm
     // END tuning (Cup): relax sigma gate (distance app mode).
     // Policy: allow ~2x of observed sigmaCurrent in each distance band.
     // NOTE: This is END-only; START/BALL remain unchanged.
@@ -190,11 +205,15 @@ class V31StateMachine(
 
     private fun sigmaMaxEnd(dMeters: Float): Float {
         // Keep base distance-aware model, but guarantee a distance-based floor.
-        // This avoids pathological low thresholds (e.g. ~1.7cm at 5m) that never become OK in practice.
+        // CUP 1차: 원거리(ball-to-cup >= 6m)에서 소폭 완화
         val raw = a + (b * dMeters)
         val cap = endSigmaCapMeters(dMeters)
         val floor = cap * 0.7f
-        return max(raw, floor).coerceIn(sigmaMin, cap)
+        var sigmaMax = max(raw, floor).coerceIn(sigmaMin, cap)
+        if (dMeters >= CUP_SIGMA_RELAX_FROM_DISTANCE_M) {
+            sigmaMax = (sigmaMax + CUP_SIGMA_FAR_RELAX_CM).coerceIn(sigmaMin, cap)
+        }
+        return sigmaMax
     }
 
     // sigma model params
@@ -219,6 +238,8 @@ class V31StateMachine(
     private val BALL_FIX_NEED_HITS = 3
     private val BALL_FIX_MIN_HOLD_NS = 220_000_000L
     private val BALL_FREEZE_TIMEOUT_NS = 2_000_000_000L
+    private val START_ANCHOR_AVERAGE_FRAMES = 10
+    private val START_ANCHOR_CLOSE_TO_AVG_M = 0.05f  // 현재 hit가 평균에서 5cm 이내일 때만 confirm
     private val BALL_JUMP_GATE_INITIAL_M = 0.35f
     private val BALL_JUMP_GATE_M = 0.50f
     private val BALL_FIX_MAX_CAMDIST_RANGE_M = 0.20f
@@ -268,6 +289,20 @@ class V31StateMachine(
     private val CUP_SIGMA_SOFTPASS_RATIO = 1.12f
     private val CUP_SIGMA_SOFTPASS_MIN_VALID_HITS = 9
     private val CUP_SIGMA_SOFTPASS_MIN_PROJECTED_PX = 24f
+    // CUP 1차: timeout 직전 near-stable 구제 (아주 작게만)
+    private val CUP_SOFT_LOCK_SIGMA_MARGIN_M = 0.015f  // threshold +1.5cm
+    private val CUP_SOFT_LOCK_MIN_VALID_HITS = 9
+    private val CUP_SOFT_LOCK_MIN_PROJECTED_PX = 18f
+
+    // AR warm-up: 최근 N프레임 윈도우 내 중앙 hit 성공 횟수로 판단
+    // BALL 1차: 상수화 + 초기 2.5초 완화 (35→28)
+    private val BALL_WARMUP_WINDOW_FRAMES = 45
+    private val BALL_WARMUP_REQUIRED_HITS = 35
+    private val BALL_WARMUP_REQUIRED_HITS_INITIAL = 28
+    private val BALL_WARMUP_INITIAL_RELAX_MS = 2500L
+    private val arWarmupWindow = ArrayDeque<Boolean>(BALL_WARMUP_WINDOW_FRAMES + 4)
+    private var arWarmupReady: Boolean = false
+    private var warmupSessionStartNs: Long = 0L
 
     var axisMode: AxisMode = AxisMode.XZ
     var state: State = State.IDLE
@@ -343,6 +378,14 @@ class V31StateMachine(
     private enum class LiveSource { PLANE_INTERSECTION, HITTEST_FALLBACK, NONE }
     private var liveSource: LiveSource = LiveSource.NONE
 
+    // LIVE stability gate: END_LOCKED 전 sigma/max-min 검사
+    private val liveStabilityBuf = FloatArray(12)
+    private var liveStabilityBufSize = 0
+    private var liveStabilityBufIndex = 0
+    private val LIVE_STABILITY_MIN_FRAMES = 5
+    private val LIVE_STABILITY_MAX_SIGMA_M = 0.12f
+    private val LIVE_STABILITY_MAX_RANGE_M = 0.18f
+
     private data class GroundPlaneModel(
         val pointOnPlane: PoseStatsMad.Vec3,
         val normal: PoseStatsMad.Vec3,
@@ -403,6 +446,31 @@ class V31StateMachine(
     private fun resetLiveMedianWindow() {
         liveMedianWindowSize = 0
         liveMedianWindowIndex = 0
+    }
+
+    private fun pushLiveStability(d: Float) {
+        if (!d.isFinite() || d <= 0f) return
+        liveStabilityBuf[liveStabilityBufIndex] = d
+        liveStabilityBufIndex = (liveStabilityBufIndex + 1) % liveStabilityBuf.size
+        if (liveStabilityBufSize < liveStabilityBuf.size) liveStabilityBufSize++
+    }
+
+    private fun resetLiveStabilityBuf() {
+        liveStabilityBufSize = 0
+        liveStabilityBufIndex = 0
+    }
+
+    private fun liveStabilitySigmaAndRangeOrNull(): Pair<Float, Float>? {
+        if (liveStabilityBufSize < LIVE_STABILITY_MIN_FRAMES) return null
+        val vals = (0 until liveStabilityBufSize).map {
+            liveStabilityBuf[(liveStabilityBufIndex - 1 - it + liveStabilityBuf.size) % liveStabilityBuf.size]
+        }.filter { it.isFinite() }
+        if (vals.size < LIVE_STABILITY_MIN_FRAMES) return null
+        val mean = vals.average().toFloat()
+        val variance = vals.map { (it - mean) * (it - mean) }.average().toFloat()
+        val sigma = kotlin.math.sqrt(variance)
+        val range = (vals.maxOrNull() ?: mean) - (vals.minOrNull() ?: mean)
+        return sigma to range
     }
 
     private fun pushLiveMedianWindow(d: Float) {
@@ -666,6 +734,24 @@ class V31StateMachine(
                             endLiveSnapshotMeters.takeIf { it.isFinite() && it > 0f }
                                 ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
                                 ?: 0f
+                        if (debugLoggingEnabled) {
+                            val usedFallback = !(endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f) &&
+                                (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
+                            val resultReason = when {
+                                endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f -> "live_snapshot"
+                                lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f -> "last_display_fallback"
+                                else -> "zero_default"
+                            }
+                            Log.d("CUP_FINAL_RESULT", "endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                                "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} " +
+                                "finalDistanceMeters=${finalDistanceMeters.let { "%.3f".format(it) }} " +
+                                "usedFallback=$usedFallback resultReason=$resultReason")
+                            if (finalDistanceMeters <= 0f || !finalDistanceMeters.isFinite()) {
+                                Log.d("CUP_ZERO_DISTANCE_GUARD", "state=RESULT whyZero=snapshot_null_and_last_display_invalid " +
+                                    "endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                                    "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }}")
+                            }
+                        }
                         state = State.RESULT
                     }
                     // Hard ignore
@@ -699,6 +785,24 @@ class V31StateMachine(
                     endLiveSnapshotMeters.takeIf { it.isFinite() && it > 0f }
                         ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
                         ?: 0f
+                if (debugLoggingEnabled) {
+                    val usedFallback = !(endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f) &&
+                        (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
+                    val resultReason = when {
+                        endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f -> "live_snapshot"
+                        lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f -> "last_display_fallback"
+                        else -> "zero_default"
+                    }
+                    Log.d("CUP_FINAL_RESULT", "endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                        "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} " +
+                        "finalDistanceMeters=${finalDistanceMeters.let { "%.3f".format(it) }} " +
+                        "usedFallback=$usedFallback resultReason=$resultReason")
+                    if (finalDistanceMeters <= 0f || !finalDistanceMeters.isFinite()) {
+                        Log.d("CUP_ZERO_DISTANCE_GUARD", "state=RESULT whyZero=snapshot_null_and_last_display_invalid " +
+                            "endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                            "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }}")
+                    }
+                }
                 state = State.RESULT
                 endLockedAtNs = 0L
             }
@@ -736,7 +840,29 @@ class V31StateMachine(
                     state == State.STABILIZING_END ||
                     (state == State.FAIL && canRetryCupFromFail())
                 )
-        if (!sampling) return buildUi(nowNs, tracking)
+        if (!sampling) {
+            // AR warm-up: IDLE 시 중앙 hit 성공을 슬라이딩 윈도우로 판단
+            if (state == State.IDLE && tracking == TrackingState.TRACKING) {
+                if (warmupSessionStartNs == 0L) warmupSessionStartNs = System.nanoTime()
+                val centerHit = sampler.hitTestBestPlaneAtScreenPoint(
+                    frame = frame,
+                    screenX = roiScreen.centerX(),
+                    screenY = roiScreen.centerY(),
+                    maxDistanceMeters = 10f,
+                    preferUpwardFacing = true,
+                    yBelowCameraMeters = null
+                )
+                val success = centerHit != null
+                arWarmupWindow.addLast(success)
+                while (arWarmupWindow.size > BALL_WARMUP_WINDOW_FRAMES) arWarmupWindow.removeFirst()
+                val requiredHits = if (warmupSessionStartNs > 0L) {
+                    val elapsedMs = (System.nanoTime() - warmupSessionStartNs) / 1_000_000L
+                    if (elapsedMs < BALL_WARMUP_INITIAL_RELAX_MS) BALL_WARMUP_REQUIRED_HITS_INITIAL else BALL_WARMUP_REQUIRED_HITS
+                } else BALL_WARMUP_REQUIRED_HITS
+                arWarmupReady = arWarmupWindow.count { it } >= requiredHits
+            }
+            return buildUi(nowNs, tracking)
+        }
         if (state == State.AIM_END || state == State.FAIL) {
             pushCupCenterHistory(PointF(roiScreen.centerX(), roiScreen.centerY()))
         }
@@ -878,6 +1004,15 @@ class V31StateMachine(
                 lastMultiRayEstimatedDistanceMeters = s.gridEstimatedDistanceMeters
                 lastMultiRayProjectedCupPx = s.gridProjectedCupPx
                 lastMultiRayCenterFallbackUsed = s.centerFallbackUsed
+                if (debugLoggingEnabled && (state == State.AIM_END || state == State.STABILIZING_END) &&
+                    nowNs - lastCupDetectStateLogNs >= 500_000_000L) {
+                    lastCupDetectStateLogNs = nowNs
+                    Log.d("CUP_DETECT_STATE", "state=$state gridPlan=${s.gridPlan ?: "null"} projectedCupPx=${s.gridProjectedCupPx?.let { "%.1f".format(it) } ?: "null"} " +
+                        "validHits=${s.validHits} totalPoints=${s.totalPoints} centerFallbackUsed=${s.centerFallbackUsed == true} " +
+                        "roiCenterX=${cupSamplingRoi.centerX()} roiCenterY=${cupSamplingRoi.centerY()} " +
+                        "cupFrozenCenterX=${cupFrozenCenter?.x?.let { "%.1f".format(it) } ?: "null"} cupFrozenCenterY=${cupFrozenCenter?.y?.let { "%.1f".format(it) } ?: "null"} " +
+                        "startAnchorOk=${startAnchor != null} dMeters=${s.gridEstimatedDistanceMeters?.let { "%.2f".format(it) } ?: "null"}")
+                }
                 s
             } else {
                 // Default sampling (BALL fix + generic UI quality)
@@ -989,6 +1124,13 @@ class V31StateMachine(
             ballDiagFreezeAgeMs = ballFreezeAgeMsTick
             ballDiagJumpRejected = ballJumpRejectedTick
             ballDiagFixState = ballFixStateTick
+            // B. jumpRejected 구분 로그 (throttled)
+            if (ballJumpRejectedTick == true && state == State.AIM_START) {
+                if (nowNs - lastBallSampleRejectJumpNs >= 500_000_000L) {
+                    lastBallSampleRejectJumpNs = nowNs
+                    Log.d("BALL_SAMPLE_REJECT", "reason=jumpRejected")
+                }
+            }
         } else {
             ballDiagGridMode = null
             ballDiagGridStepPx = null
@@ -1105,6 +1247,7 @@ class V31StateMachine(
                     }
                 }
                 pushLiveMedianWindow(liveSmoothedMeters)
+                pushLiveStability(liveSmoothedMeters)
                 if (debugLoggingEnabled && nowNs - dbgLastZoomHitLogNs >= 300_000_000L) {
                     dbgLastZoomHitLogNs = nowNs
                     Log.d(
@@ -1123,6 +1266,7 @@ class V31StateMachine(
             liveRawMeters = null
             centerHitValid = null
             resetLiveMedianWindow()
+            resetLiveStabilityBuf()
         }
 
         // --- Debug diagnostics (XYZ mode) ---
@@ -1320,6 +1464,35 @@ class V31StateMachine(
                             }
                         }
                     }
+                // CUP 1차: soft-lock - timeout 직전 sigma가 threshold 근처인 경우만 구제
+                if (state == State.STABILIZING_END &&
+                    lastFailDetailCode == "TIMEOUT_SIGMA_NOT_OK" &&
+                    tracking == TrackingState.TRACKING) {
+                    val sigmaUsed = lastSigmaUsedMeters ?: 0f
+                    val sigmaMax = lastSigmaMaxMeters ?: 0f
+                    val hit = sample.bestHit
+                    val proj = sample.gridProjectedCupPx
+                    val validOk = sample.validHits >= CUP_SOFT_LOCK_MIN_VALID_HITS
+                    val projOk = proj != null && proj.isFinite() && proj >= CUP_SOFT_LOCK_MIN_PROJECTED_PX
+                    val sigmaNearOk = sigmaMax > 1e-6f && sigmaUsed <= sigmaMax + CUP_SOFT_LOCK_SIGMA_MARGIN_M
+                    if (hit != null && validOk && projOk && sigmaNearOk) {
+                        confirmLock(nowNs, hit)
+                        buf.clear()
+                        lastAimSample = null
+                        if (debugLoggingEnabled) {
+                            Log.d("CUP_LOCK_GATE", "softLock=true sigmaUsed=${"%.3f".format(sigmaUsed)} sigmaMax=${"%.3f".format(sigmaMax)} " +
+                                "projectedPx=${"%.1f".format(proj)} validHits=${sample.validHits}")
+                        }
+                        return buildUi(nowNs, tracking, sample, flashLock = true)
+                    }
+                }
+                if (debugLoggingEnabled && lastFailDetailCode == "TIMEOUT_SIGMA_NOT_OK") {
+                    Log.d("CUP_ZERO_DISTANCE_GUARD", "state=FAIL whyZero=timeout_sigma_not_ok " +
+                        "sigmaCurrent_cm=${lastSigmaUsedMeters?.let { "%.2f".format(it * 100) } ?: "null"} " +
+                        "sigmaThreshold_cm=${lastSigmaMaxMeters?.let { "%.2f".format(it * 100) } ?: "null"} " +
+                        "liveAtFinish_m=${liveRawMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                        "fixedDEstMeters=${"%.3f".format(fixedDEstMeters)}")
+                }
                 enterFail(FailReason.FAIL_TIMEOUT)
                 return buildUi(nowNs, tracking, sample, flashFail = true)
             }
@@ -1339,6 +1512,11 @@ class V31StateMachine(
             if (!ok) {
                 consecutiveNoValidHits++
                 if (consecutiveNoValidHits >= FAIL_NO_VALID_HITS_M) {
+                    if (debugLoggingEnabled && state == State.STABILIZING_END && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                        lastCupFixAttemptLogNs = nowNs
+                        Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=${sample.centerFallbackUsed == true} " +
+                            "rejectedReason=insufficient_valid_hits")
+                    }
                     lastFixedMinSamplesAtFail = fixedMinSamples
                     lastBufSizeAtFail = buf.size
                     lastSigmaOkConsecutiveAtFail = sigmaOkConsecutive
@@ -1357,15 +1535,26 @@ class V31StateMachine(
 
             if (state == State.STABILIZING_START) {
                 val holdElapsed = nowNs - stabilizingEnterNs
-                if (buf.size >= currentBallFixNeedHits() && holdElapsed >= BALL_FIX_MIN_HOLD_NS) {
+                if (buf.size >= START_ANCHOR_AVERAGE_FRAMES && holdElapsed >= BALL_FIX_MIN_HOLD_NS) {
                     val distRange = ballRecentCamDistRangeOrNull()
                     val allowBallFix = (distRange != null && distRange <= BALL_FIX_MAX_CAMDIST_RANGE_M)
+                    val recentBuf = buf.takeLast(START_ANCHOR_AVERAGE_FRAMES)
+                    val avgTx = recentBuf.map { it.x }.average().toFloat()
+                    val avgTy = recentBuf.map { it.y }.average().toFloat()
+                    val avgTz = recentBuf.map { it.z }.average().toFloat()
+                    val curP = stabilizingHit!!.hitPose
+                    val distToAvg = sqrt(
+                        (curP.tx() - avgTx) * (curP.tx() - avgTx) +
+                            (curP.ty() - avgTy) * (curP.ty() - avgTy) +
+                            (curP.tz() - avgTz) * (curP.tz() - avgTz)
+                    )
+                    val closeToAvg = distToAvg <= START_ANCHOR_CLOSE_TO_AVG_M
                     Log.d(
                         "V31StateMachine",
-                        "BALL_FIX_GUARD holdMs=${holdElapsed / 1_000_000L} jumpGate=${"%.2f".format(BALL_JUMP_GATE_INITIAL_M)} " +
-                            "distRange=${if (distRange != null) "%.3f".format(distRange) else "NA"} allow=$allowBallFix"
+                        "BALL_FIX_GUARD holdMs=${holdElapsed / 1_000_000L} buf=${buf.size} distToAvg=${"%.3f".format(distToAvg)} " +
+                            "closeToAvg=$closeToAvg distRange=${if (distRange != null) "%.3f".format(distRange) else "NA"} allow=$allowBallFix"
                     )
-                    if (!allowBallFix) {
+                    if (!allowBallFix || !closeToAvg) {
                         return buildUi(nowNs, tracking, sample)
                     }
                     confirmLock(nowNs, stabilizingHit)
@@ -1447,6 +1636,20 @@ class V31StateMachine(
                     sigmaOkStartNs = 0L
                 }
 
+                // CUP_LOCK_GATE: 원거리 sigma block 시 로그 (500ms throttle)
+                if (debugLoggingEnabled && state == State.STABILIZING_END && !sigmaOk &&
+                    nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                    lastCupFixAttemptLogNs = nowNs
+                    val timeoutRemainingMs = max(0L, (END_STABILIZING_TIMEOUT_NS - (nowNs - stabilizingEnterNs)) / 1_000_000L)
+                    val blockedReason = if (sigmaUsed.isFinite() && sigmaMax.isFinite()) "sigma_not_ok" else "sigma_not_computed"
+                    Log.d("CUP_LOCK_GATE", "engineState=END_STABILIZING estimatedDistanceM=${"%.3f".format(fixedDEstMeters)} " +
+                        "projectedCupPx=${projectedPx?.let { "%.1f".format(it) } ?: "null"} multiRayPlan=${sample.gridPlan ?: "null"} " +
+                        "validSampleCount=${sample.validHits} sigmaCurrent_cm=${sigmaUsed.let { "%.2f".format(it * 100) }} " +
+                        "sigmaThreshold_cm=${sigmaMax.let { "%.2f".format(it * 100) }} sigmaOkConsecutive=$sigmaOkConsecutive " +
+                        "sigmaOkElapsedMs=${if (sigmaOkStartNs > 0L) (nowNs - sigmaOkStartNs) / 1_000_000L else 0} " +
+                        "timeoutRemainingMs=$timeoutRemainingMs blockedReason=$blockedReason")
+                }
+
                 val okElapsed = if (sigmaOkStartNs > 0L) (nowNs - sigmaOkStartNs) else 0L
                 if (sigmaOkConsecutive >= LOCK_CONSEC_TICKS && okElapsed >= LOCK_TIME_GATE_NS) {
                     if (state == State.STABILIZING_END && isFirstMeasurementActive) {
@@ -1488,6 +1691,12 @@ class V31StateMachine(
                             cupValidSampleCount < CUP_LOCK_MIN_VALID_SAMPLES ||
                                 (centerFallbackUsed && cupValidSampleCount < CUP_LOCK_FALLBACK_SAFE_MIN_SAMPLES)
                         if (qualityBlocked) {
+                            if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                                lastCupFixAttemptLogNs = nowNs
+                                Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=$centerFallbackUsed " +
+                                    "sigma=${lastSigmaUsedMeters?.let { "%.3f".format(it) } ?: "null"} sigmaMax=${lastSigmaMaxMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                                    "rejectedReason=cup_quality_guard")
+                            }
                             Log.d(
                                 "V31StateMachine",
                                 "CUP_QUALITY_GUARD block=true validSampleCount=$cupValidSampleCount validHits=${sample.validHits} " +
@@ -1510,6 +1719,13 @@ class V31StateMachine(
                             val diffThreshold = max(LIVE_SNAPSHOT_GUARD_BASE_DIFF_M, liveEma * LIVE_SNAPSHOT_GUARD_RELATIVE_RATIO)
                             if (diff > diffThreshold) {
                                 if (liveSnapshotGuardRetryCount >= LIVE_SNAPSHOT_GUARD_MAX_RETRIES) {
+                                    if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                                        lastCupFixAttemptLogNs = nowNs
+                                        Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=${sample.centerFallbackUsed == true} " +
+                                            "sigma=${lastSigmaUsedMeters?.let { "%.3f".format(it) } ?: "null"} sigmaMax=${lastSigmaMaxMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                                            "liveRaw=${liveRaw?.let { "%.3f".format(it) } ?: "null"} liveEma=${liveEma.let { "%.3f".format(it) }} " +
+                                            "rejectedReason=live_snapshot_guard")
+                                    }
                                     return buildUi(nowNs, tracking, sample)
                                 }
                                 if (liveSnapshotGuardHoldStartNs == 0L) {
@@ -1570,6 +1786,12 @@ class V31StateMachine(
                                         "cupFixDist=${if (cupFixValid) "%.3f".format(cupFixDist) else "NA"} diff=NA decision=$decision"
                                 )
                                 if (decision == "HOLD") {
+                                    if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                                        lastCupFixAttemptLogNs = nowNs
+                                        Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=${sample.centerFallbackUsed == true} " +
+                                            "sigma=${lastSigmaUsedMeters?.let { "%.3f".format(it) } ?: "null"} sigmaMax=${lastSigmaMaxMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                                            "rejectedReason=far_mode_hold")
+                                    }
                                     return buildUi(nowNs, tracking, sample)
                                 }
                             } else if (diff > FAR_MODE_MAX_LIVE_CUP_DIFF_M) {
@@ -1582,6 +1804,12 @@ class V31StateMachine(
                                         "cupFixDist=${"%.3f".format(cupFixDist)} diff=${"%.3f".format(diff)} decision=$decision"
                                 )
                                 if (decision == "HOLD") {
+                                    if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                                        lastCupFixAttemptLogNs = nowNs
+                                        Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=${sample.centerFallbackUsed == true} " +
+                                            "sigma=${lastSigmaUsedMeters?.let { "%.3f".format(it) } ?: "null"} sigmaMax=${lastSigmaMaxMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                                            "rejectedReason=far_mode_hold")
+                                    }
                                     return buildUi(nowNs, tracking, sample)
                                 }
                             } else {
@@ -1600,6 +1828,15 @@ class V31StateMachine(
                         } else {
                             farModeHoldStartNs = 0L
                         }
+                    }
+                    if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
+                        lastCupFixAttemptLogNs = nowNs
+                        val cupFixDistVal = startAnchor?.pose?.let { distanceMeters(it, stabilizingHit.hitPose) }
+                        Log.d("CUP_FIX_ATTEMPT", "state=$state validHits=${sample.validHits} centerFallbackUsed=${sample.centerFallbackUsed == true} " +
+                            "sigma=${lastSigmaUsedMeters?.let { "%.3f".format(it) } ?: "null"} sigmaMax=${lastSigmaMaxMeters?.let { "%.3f".format(it) } ?: "null"} " +
+                            "liveHasValue=$liveHasValue liveSmoothedMeters=${liveSmoothedMeters.let { "%.3f".format(it) }} " +
+                            "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} cupFixDist=${cupFixDistVal?.let { "%.3f".format(it) } ?: "null"} " +
+                            "rejectedReason=none")
                     }
                     confirmLock(nowNs, stabilizingHit)
                     sigmaOkConsecutive = 0
@@ -1754,22 +1991,59 @@ class V31StateMachine(
                 state = State.END_LOCKED
                 endLockedAtNs = nowNs
                 completeFirstMeasurementIfNeeded()
-                // Capture LIVE snapshot to prevent END_LOCKED jump to anchor-based distance.
-                endLiveSnapshotMeters =
-                    (if (useFarModeLiveMedianAtEndLock && (farModeLiveMedianAtEndLock?.isFinite() == true) && (farModeLiveMedianAtEndLock ?: 0f) > 0f) {
-                        farModeLiveMedianAtEndLock
-                    } else if (liveHasValue && liveSmoothedMeters.isFinite() && liveSmoothedMeters > 0f) {
-                        liveSmoothedMeters
+                // LIVE stability gate: 통과 시 farMode → liveSmoothed, 실패 시 fallback
+                val stab = liveStabilitySigmaAndRangeOrNull()
+                val liveStable = stab != null &&
+                    ((stab.first <= LIVE_STABILITY_MAX_SIGMA_M) || (stab.second <= LIVE_STABILITY_MAX_RANGE_M))
+                val snapshotValue: Float? =
+                    if (liveStable) {
+                        if (useFarModeLiveMedianAtEndLock && (farModeLiveMedianAtEndLock?.isFinite() == true) && (farModeLiveMedianAtEndLock ?: 0f) > 0f) {
+                            farModeLiveMedianAtEndLock
+                        } else if (liveHasValue && liveSmoothedMeters.isFinite() && liveSmoothedMeters > 0f) {
+                            liveSmoothedMeters
+                        } else null
                     } else {
                         null
-                    })
+                    }
+                endLiveSnapshotMeters =
+                    snapshotValue
                         ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
                         ?: 0f
+                if (debugLoggingEnabled) {
+                    val usedFallback = (snapshotValue == null) && (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
+                    val resultReason = when {
+                        snapshotValue != null && snapshotValue.isFinite() && snapshotValue > 0f -> "live_snapshot"
+                        lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f -> "last_display_fallback"
+                        else -> "zero_default"
+                    }
+                    Log.d("CUP_FINAL_RESULT", "endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                        "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} " +
+                        "finalDistanceMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                        "liveStable=$liveStable liveHasValue=$liveHasValue usedFallback=$usedFallback resultReason=$resultReason")
+                    if (endLiveSnapshotMeters <= 0f || !endLiveSnapshotMeters.isFinite()) {
+                        val whyZero = when {
+                            !liveStable -> "live_stability_failed"
+                            !liveHasValue || (liveSmoothedMeters <= 0f || !liveSmoothedMeters.isFinite()) -> "no_live_value"
+                            !(lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f) -> "snapshot_null_and_last_display_invalid"
+                            else -> "unknown"
+                        }
+                        Log.d("CUP_ZERO_DISTANCE_GUARD", "state=END_LOCKED whyZero=$whyZero endLiveSnapshotMeters=${endLiveSnapshotMeters.let { "%.3f".format(it) }} " +
+                            "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} liveStable=$liveStable liveHasValue=$liveHasValue " +
+                            "projectedPx=${lastMultiRayProjectedCupPx?.let { "%.1f".format(it) } ?: "null"} validHits=${lastValidSampleCount ?: 0} " +
+                            "centerFallbackUsed=${lastMultiRayCenterFallbackUsed == true}")
+                    }
+                }
+                if (liveStable) {
+                    Log.d("V31StateMachine", "LIVE_STABILITY_GATE pass sigma=${stab?.first?.let { "%.3f".format(it) } ?: "N/A"} range=${stab?.second?.let { "%.3f".format(it) } ?: "N/A"}")
+                } else {
+                    Log.d("V31StateMachine", "LIVE_STABILITY_GATE fail sigma=${stab?.first?.let { "%.3f".format(it) } ?: "N/A"} range=${stab?.second?.let { "%.3f".format(it) } ?: "N/A"} useFallback=true")
+                }
                 if (endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f) {
                     lastDisplayDistanceMeters = endLiveSnapshotMeters
                 }
                 useFarModeLiveMedianAtEndLock = false
                 farModeLiveMedianAtEndLock = null
+                resetLiveStabilityBuf()
                 // Plane consistency diagnostics: compare CUP plane normal vs saved BALL ground plane normal.
                 ballCupPlaneAngleDeg = null
                 val gp = groundPlaneModel
@@ -1851,6 +2125,7 @@ class V31StateMachine(
         liveSmoothedMeters = 0f
         liveHasValue = false
         liveSource = LiveSource.NONE
+        resetLiveStabilityBuf()
         groundPlaneModel = null
         ballGroundPlaneNormalY = null
         ballGroundPlaneNormalLen = null
@@ -1900,6 +2175,9 @@ class V31StateMachine(
         failReason = null
         state = State.IDLE
         resetEndDisplayBuf()
+        arWarmupWindow.clear()
+        arWarmupReady = false
+        warmupSessionStartNs = 0L
     }
 
     private fun completeFirstMeasurementIfNeeded() {
@@ -2114,10 +2392,54 @@ class V31StateMachine(
 
         val startEnabled =
             when (state) {
-                State.IDLE -> trackingOk
+                State.IDLE -> trackingOk && arWarmupReady
                 State.AIM_START -> trackingOk && ballFixHitsInWindow >= currentBallFixNeedHits() && startDistanceReady
                 else -> false
             }
+
+        // A. BALL enable 막힌 이유 (대표 1개만, 우선순위: tracking > warmup > distance > hits)
+        val ballBlockedReason: String? = when {
+            startEnabled -> null
+            state == State.IDLE || state == State.AIM_START -> {
+                when {
+                    !trackingOk -> "tracking_not_ready"
+                    state == State.IDLE -> "warmup_not_ready"
+                    !startDistanceReady -> "too_close_distance_not_ready"
+                    else -> "insufficient_stable_hits"
+                }
+            }
+            else -> null
+        }
+        if (!startEnabled && (state == State.IDLE || state == State.AIM_START)) {
+            val throttleNs = 500_000_000L
+            if (nowNs - lastBallEnableGateLogNs >= throttleNs) {
+                lastBallEnableGateLogNs = nowNs
+                val arSuccess = arWarmupWindow.count { it }
+                val requiredHits = if (warmupSessionStartNs > 0L) {
+                    val elapsedMs = (System.nanoTime() - warmupSessionStartNs) / 1_000_000L
+                    if (elapsedMs < BALL_WARMUP_INITIAL_RELAX_MS) BALL_WARMUP_REQUIRED_HITS_INITIAL else BALL_WARMUP_REQUIRED_HITS
+                } else BALL_WARMUP_REQUIRED_HITS
+                val needHits = currentBallFixNeedHits()
+                val planeRejected = sample?.ballSampleRejectionReason == "planeOutsidePolygon"
+                val blockedReason = when {
+                    !trackingOk -> "tracking_not_ready"
+                    state == State.IDLE -> "warmup_not_ready"
+                    !startDistanceReady -> "too_close_distance_not_ready"
+                    else -> "insufficient_stable_hits"
+                }
+                Log.d("BALL_ENABLE_GATE", "state=$state trackingOk=$trackingOk arWarmupReady=$arWarmupReady " +
+                    "arWarmupSuccessCount=$arSuccess/$requiredHits warmupWindowSize=$BALL_WARMUP_WINDOW_FRAMES " +
+                    "startDistanceReady=$startDistanceReady blockedReason=$blockedReason " +
+                    "ballFixHitsInWindow=$ballFixHitsInWindow/needHits=$needHits " +
+                    "startDistanceReady=$startDistanceReady currentStartDistanceM=${sample?.bestHit?.distance ?: "null"} " +
+                    "jumpRejected=${ballDiagJumpRejected ?: false} planeRejectedByPolygon=$planeRejected")
+                // B. unstableDistance / insufficientHitsWindow 구분 로그
+                if (state == State.AIM_START) {
+                    if (!startDistanceReady) Log.d("BALL_SAMPLE_REJECT", "reason=unstableDistance")
+                    else if (ballFixHitsInWindow < needHits) Log.d("BALL_SAMPLE_REJECT", "reason=insufficientHitsWindow")
+                }
+            }
+        }
 
         val finishEnabled =
             when (state) {
@@ -2132,6 +2454,40 @@ class V31StateMachine(
                 State.END_LOCKED -> true
                 else -> false
             }
+
+        // CUP blocked reason (debug only)
+        val cupBlockedReason: String? = when {
+            finishEnabled -> null
+            state == State.AIM_END || state == State.FAIL -> {
+                when {
+                    !trackingOk -> "tracking_not_ready"
+                    startAnchor == null -> "start_anchor_missing"
+                    state == State.FAIL && !canRetryCupFromFail() -> "cannot_retry"
+                    else -> {
+                        val proj = sample?.gridProjectedCupPx
+                        val projOk = proj != null && proj.isFinite() && proj >= CUP_AIM_READY_MIN_PROJECTED_PX
+                        val hitsOk = (sample?.validHits ?: 0) >= 1
+                        when {
+                            !projOk -> "projected_px_small"
+                            !hitsOk -> "valid_hits_insufficient"
+                            else -> "unknown"
+                        }
+                    }
+                }
+            }
+            else -> null
+        }
+        if (debugLoggingEnabled && !finishEnabled && (state == State.AIM_END || state == State.FAIL)) {
+            val throttleNs = 500_000_000L
+            if (nowNs - lastCupEnableGateLogNs >= throttleNs) {
+                lastCupEnableGateLogNs = nowNs
+                val proj = sample?.gridProjectedCupPx
+                val aimReady = isCupAimReady(sample)
+                Log.d("CUP_ENABLE_GATE", "state=$state trackingOk=$trackingOk startAnchorOk=${startAnchor != null} " +
+                    "isCupAimReady=$aimReady projectedPx=${if (proj != null && proj.isFinite()) "%.1f".format(proj) else "null"} " +
+                    "validHits=${sample?.validHits ?: 0} blockedReason=${cupBlockedReason ?: "none"}")
+            }
+        }
 
         val wantsMoveDevice = tracking != TrackingState.TRACKING
         val isFinal = state == State.RESULT
@@ -2259,7 +2615,16 @@ class V31StateMachine(
             finishEnabled = finishEnabled,
             statusWantsMoveDeviceText = wantsMoveDevice,
             isResultFinal = isFinal,
-            isMeasuringFlow = isMeasuringFlow
+            isMeasuringFlow = isMeasuringFlow,
+            ballBlockedReason = ballBlockedReason,
+            ballArWarmupSuccessCount = if (!startEnabled && (state == State.IDLE || state == State.AIM_START)) arWarmupWindow.count { it } else null,
+            ballArWarmupRequired = if (!startEnabled && (state == State.IDLE || state == State.AIM_START)) {
+                if (warmupSessionStartNs > 0L) {
+                    val elapsedMs = (System.nanoTime() - warmupSessionStartNs) / 1_000_000L
+                    if (elapsedMs < BALL_WARMUP_INITIAL_RELAX_MS) BALL_WARMUP_REQUIRED_HITS_INITIAL else BALL_WARMUP_REQUIRED_HITS
+                } else BALL_WARMUP_REQUIRED_HITS
+            } else null,
+            cupBlockedReason = cupBlockedReason
         )
     }
 
