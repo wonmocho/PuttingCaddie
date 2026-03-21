@@ -18,6 +18,10 @@ class BackgroundRenderer {
     private var backgroundMesh = -1
     private var texMatrixLocation = -1
     private var zoomLocation = -1
+    private var brightnessLocation = -1
+
+    // 야외 햇빛: 카메라 자동노출이 어둡게 잡히는 경우 보정 (Basic만 카메라 있음, Pro는 UI만)
+    private var brightnessBoost = 1.2f
 
     private var userRotationDeg = 0.0f
     private var mirrorHorizontal = false
@@ -85,12 +89,11 @@ class BackgroundRenderer {
         precision mediump float;
         varying vec2 vTexCoord;
         uniform samplerExternalOES sTexture;
+        uniform float uBrightness;
         void main() {
-            // IMPORTANT:
-            // ARCore background UVs may be outside [0,1] to implement center-crop.
-            // Some devices ignore wrap modes for samplerExternalOES, so clamp explicitly.
             vec2 uv = clamp(vTexCoord, 0.0, 1.0);
-            gl_FragColor = texture2D(sTexture, uv);
+            vec4 tex = texture2D(sTexture, uv);
+            gl_FragColor = vec4(min(tex.rgb * uBrightness, vec3(1.0)), tex.a);
         }
     """.trimIndent()
 
@@ -124,6 +127,7 @@ class BackgroundRenderer {
         backgroundTextureId = GLES20.glGetUniformLocation(backgroundShader, "sTexture")
         texMatrixLocation = GLES20.glGetUniformLocation(backgroundShader, "uTexMatrix")
         zoomLocation = GLES20.glGetUniformLocation(backgroundShader, "uZoom")
+        brightnessLocation = GLES20.glGetUniformLocation(backgroundShader, "uBrightness")
 
         val vertices =
             ByteBuffer.allocateDirect(backgroundVertices.size * 4).order(ByteOrder.nativeOrder())
@@ -163,6 +167,7 @@ class BackgroundRenderer {
         updateTexMatrix()
         GLES20.glUniformMatrix3fv(texMatrixLocation, 1, false, texMatrix3, 0)
         GLES20.glUniform1f(zoomLocation, zoomLevel)
+        if (brightnessLocation >= 0) GLES20.glUniform1f(brightnessLocation, brightnessBoost)
 
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, backgroundMesh)
         GLES20.glEnableVertexAttribArray(0)

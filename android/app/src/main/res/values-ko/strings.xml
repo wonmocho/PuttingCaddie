@@ -12,6 +12,17 @@
     <string name="greeniq_hint_cup">컵을 화면 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n컵이 작게 보이면 컵 쪽으로 이동해 다시 누르세요.</string>
     <string name="greeniq_hint_cup_realign">Ball을 먼저 찍은 후 컵이 잘 보이는 위치에서 Cup을 누르세요</string>
     <string name="greeniq_hint_done">↺를 눌러 리셋</string>
+    <!-- Debug / instruction (개발 빌드, 사용자 친화적) -->
+    <string name="debug_ball_ground_scan">바닥 인식 중 %1$d/%2$d</string>
+    <string name="debug_ball_tracking">주변을 천천히 비춰 주세요</string>
+    <string name="debug_ball_too_close">공과 너무 가깝습니다</string>
+    <string name="debug_ball_steady">공을 더 안정적으로 맞춰 주세요</string>
+    <string name="debug_cup_center">컵이 화면 중앙에 잘 보이도록 맞춰 주세요</string>
+    <string name="debug_cup_searching">컵을 찾는 중입니다</string>
+    <string name="debug_cup_ball_first">BALL 먼저 찍어 주세요</string>
+    <string name="debug_measure_again">다시 측정해 주세요</string>
+    <string name="debug_measurement_not_completed">측정이 완료되지 않았습니다</string>
+
     <!-- BALL 준비 안내 (버튼 비활성 시) -->
     <string name="ball_hint_tracking">Tracking GOOD 상태에서 측정하세요</string>
     <string name="ball_hint_warmup">바닥을 천천히 좌우로 비춰 주세요</string>

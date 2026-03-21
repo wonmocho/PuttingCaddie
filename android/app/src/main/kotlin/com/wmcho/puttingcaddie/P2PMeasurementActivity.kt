@@ -815,8 +815,17 @@ class P2PMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         return String.format(java.util.Locale.US, "%.3f", v)
     }
 
+    // 야외 햇빛 가시성: 측정 화면 진입 시 밝기 100%, 종료 시 복구 (Basic과 동일)
+    private var savedScreenBrightness: Float? = null
+
     override fun onResume() {
         super.onResume()
+        runCatching {
+            val attrs = window.attributes
+            savedScreenBrightness = attrs.screenBrightness
+            attrs.screenBrightness = 1.0f
+            window.attributes = attrs
+        }
         glView?.onResume()
         try {
             if (session != null) {
@@ -830,6 +839,14 @@ class P2PMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     override fun onPause() {
         super.onPause()
+        runCatching {
+            savedScreenBrightness?.let { saved ->
+                val attrs = window.attributes
+                attrs.screenBrightness = saved
+                window.attributes = attrs
+                savedScreenBrightness = null
+            }
+        }
         glView?.onPause()
         session?.pause()
     }

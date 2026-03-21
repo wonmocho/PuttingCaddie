@@ -12,6 +12,17 @@
     <string name="greeniq_hint_cup">Align the cup in the center target ring and tap CUP.\nIf the cup looks small, move toward it and tap again.</string>
     <string name="greeniq_hint_cup_realign">Tap BALL first, then tap CUP from where the cup is clearly visible.</string>
     <string name="greeniq_hint_done">Tap ↺ to reset</string>
+    <!-- Debug / instruction (dev build, user-friendly) -->
+    <string name="debug_ball_ground_scan">Ground scan %1$d/%2$d</string>
+    <string name="debug_ball_tracking">Tracking… move slowly</string>
+    <string name="debug_ball_too_close">Too close to the ball</string>
+    <string name="debug_ball_steady">Center the ball more steadily</string>
+    <string name="debug_cup_center">Center the cup clearly</string>
+    <string name="debug_cup_searching">Searching for cup…</string>
+    <string name="debug_cup_ball_first">Capture BALL first</string>
+    <string name="debug_measure_again">Measure again</string>
+    <string name="debug_measurement_not_completed">Measurement not completed</string>
+
     <!-- BALL 준비 안내 (버튼 비활성 시) -->
     <string name="ball_hint_tracking">Measure when Tracking is GOOD</string>
     <string name="ball_hint_warmup">Slowly scan the floor left and right</string>

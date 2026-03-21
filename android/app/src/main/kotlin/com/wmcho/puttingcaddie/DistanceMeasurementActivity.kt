@@ -1343,18 +1343,32 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             "insufficient_stable_hits" -> R.string.ball_hint_hits
             else -> null
         }
-        // C. 개발 빌드: BALL/CUP 버튼 막힌 이유 및 0m 결과 표시
+        // C. 개발 빌드: BALL/CUP 버튼 막힌 이유 (쉬운 표현, 0/35 형식 유지)
         txtInstruction.text = when {
             isDebuggableBuild() && !ui.startEnabled && ui.ballBlockedReason != null -> {
-                val hits = ui.ballArWarmupSuccessCount?.let { s -> ui.ballArWarmupRequired?.let { r -> " hits=$s/$r" } ?: "" } ?: ""
-                "DEBUG: BALL blocked=${ui.ballBlockedReason}$hits"
+                val s = ui.ballArWarmupSuccessCount ?: 0
+                val r = ui.ballArWarmupRequired ?: 35
+                when (ui.ballBlockedReason) {
+                    "tracking_not_ready" -> getString(R.string.debug_ball_tracking)
+                    "warmup_not_ready" -> getString(R.string.debug_ball_ground_scan, s, r)
+                    "too_close_distance_not_ready" -> getString(R.string.debug_ball_too_close)
+                    "insufficient_stable_hits" -> getString(R.string.debug_ball_steady)
+                    else -> getString(R.string.debug_ball_ground_scan, s, r)
+                }
             }
             isDebuggableBuild() && !ui.finishEnabled && ui.cupBlockedReason != null &&
                 (ui.engineState == V31StateMachine.State.AIM_END || ui.engineState == V31StateMachine.State.FAIL) ->
-                "DEBUG: [CUP] blocked: ${ui.cupBlockedReason}"
+                when (ui.cupBlockedReason) {
+                    "tracking_not_ready" -> getString(R.string.debug_ball_tracking)
+                    "start_anchor_missing" -> getString(R.string.debug_cup_ball_first)
+                    "cannot_retry" -> getString(R.string.debug_measure_again)
+                    "projected_px_small" -> getString(R.string.debug_cup_center)
+                    "valid_hits_insufficient" -> getString(R.string.debug_cup_searching)
+                    else -> getString(R.string.debug_cup_searching)
+                }
             isDebuggableBuild() && ui.engineState == V31StateMachine.State.RESULT &&
                 (ui.distanceMeters <= 0f || !ui.distanceMeters.isFinite()) ->
-                "DEBUG: [CUP] result: zero_default"
+                getString(R.string.debug_measurement_not_completed)
             !ui.startEnabled && ballHintResId != null &&
                 (ui.engineState == V31StateMachine.State.IDLE || ui.engineState == V31StateMachine.State.AIM_START) ->
                 getString(ballHintResId)
@@ -2273,6 +2287,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     }
 
     private fun maybeShowSurveyFlow() {
+        // 설문 비활성화 (안정적/불안정 질문 제거)
+        return
         val p = prefs()
         val appLaunchCount = p.getInt(KEY_APP_LAUNCHES, 0)
         val resultCount = p.getInt(KEY_RESULT_SUCCESS_COUNT, 0)
