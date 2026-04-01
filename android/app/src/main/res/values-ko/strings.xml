@@ -39,6 +39,30 @@
     <string name="menu_field_test">필드 테스트 로그</string>
     <string name="menu_measurement_guide">측정 가이드</string>
     <string name="menu_send_feedback">피드백 보내기 (로그 이메일)</string>
+    <string name="menu_pro_test_mode">Pro 테스트 모드 (개발용)</string>
+    <string name="pro_test_mode_on">Pro 테스트: 켜짐</string>
+    <string name="pro_test_mode_off">Pro 테스트: 꺼짐</string>
+    <!-- Pro graphic result (from PuttingCaddyPro) -->
+    <string name="label_distance">거리</string>
+    <string name="label_updown_slope">상하경사</string>
+    <string name="label_side_slope">에이밍</string>
+    <string name="label_confidence">신뢰도</string>
+    <string name="slope_not_measured">경사 미측정</string>
+    <string name="slope_lateral_not_shown_product">측면 미표시</string>
+    <string name="level0_message">컵과 볼이 보이도록 화면을 다시 맞춘 후 재측정 바랍니다.</string>
+    <string name="level1_message">거리는 측정되었으나 경사 정보가 부족합니다.</string>
+    <string name="level2_message">거리와 상하경사까지 측정되었습니다.</string>
+    <string name="level3_message">모든 측정이 완료되었습니다.</string>
+    <string name="pro_btn_remeasure">← 재측정</string>
+    <string name="pro_btn_analysis_detail">분석 상세</string>
+    <string name="cup_dimension_value">10.8cm</string>
+
+    <string name="slope_uphill_downhill">상하경사</string>
+    <string name="slope_left_right">측면경사</string>
+    <string name="slope_plane_diff">평면차이</string>
+    <string name="slope_locked_pro">— Pro</string>
+    <string name="pro_cta_monthly">1개월 Pro</string>
+    <string name="pro_cta_3months">3개월 Pro</string>
 
     <!-- Survey / review -->
     <string name="survey1_title">실사용 기준에서 측정 안정성은 어떠셨나요?</string>
@@ -92,6 +116,9 @@
     <string name="btn_accuracy">측정오차</string>
     <string name="btn_start">BALL</string>
     <string name="btn_finish">CUP</string>
+    <string name="btn_result_data">결과data</string>
+    <string name="btn_measurement_data">측정data</string>
+    <string name="title_measurement_data">측정 데이터</string>
     <string name="btn_reset">RESET</string>
 
     <!-- Distance formats -->

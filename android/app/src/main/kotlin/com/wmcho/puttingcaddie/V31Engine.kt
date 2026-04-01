@@ -23,5 +23,11 @@ class V31Engine(mapper: ScreenToViewMapper, debugLoggingEnabled: Boolean = false
     override fun reset() {
         sm.onUiEvent(V31StateMachine.UiEvent.ResetPressed, System.nanoTime())
     }
+
+    override fun setSlopeTestLogContext(sessionId: String?, repeatIndex: Int?, targetScenario: String?) {
+        sm.slopeTestSessionId = sessionId
+        sm.slopeRepeatIndex = repeatIndex
+        sm.slopeTargetScenario = targetScenario
+    }
 }
 

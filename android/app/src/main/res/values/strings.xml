@@ -39,6 +39,31 @@
     <string name="menu_field_test">Field test log</string>
     <string name="menu_measurement_guide">Measurement guide</string>
     <string name="menu_send_feedback">Send feedback (email log)</string>
+    <string name="menu_pro_test_mode">Pro test mode (debug)</string>
+    <string name="pro_test_mode_on">Pro test: ON</string>
+    <string name="pro_test_mode_off">Pro test: OFF</string>
+    <!-- Pro graphic result (from PuttingCaddyPro) -->
+    <string name="label_distance">Distance</string>
+    <string name="label_updown_slope">Up/Down</string>
+    <string name="label_side_slope">Aiming</string>
+    <string name="label_confidence">Confidence</string>
+    <string name="slope_not_measured">Slope not measured</string>
+    <!-- Product policy: lateral / aiming row hidden until side-slope is stable -->
+    <string name="slope_lateral_not_shown_product">—</string>
+    <string name="level0_message">Reframe so the cup and ball are visible, then re-measure.</string>
+    <string name="level1_message">Distance measured, but slope information is insufficient.</string>
+    <string name="level2_message">Distance + up/down slope measured.</string>
+    <string name="level3_message">All measurements complete.</string>
+    <string name="pro_btn_remeasure">← Re-measure</string>
+    <string name="pro_btn_analysis_detail">Analysis details</string>
+    <string name="cup_dimension_value">10.8cm</string>
+
+    <string name="slope_uphill_downhill">Uphill/Downhill</string>
+    <string name="slope_left_right">Left/Right</string>
+    <string name="slope_plane_diff">Plane diff</string>
+    <string name="slope_locked_pro">— Pro</string>
+    <string name="pro_cta_monthly">Pro 1 month</string>
+    <string name="pro_cta_3months">Pro 3 months</string>
 
     <!-- Survey / review -->
     <string name="survey1_title">How stable did the measurement feel in real use?</string>
@@ -92,6 +117,9 @@
     <string name="btn_accuracy">Accuracy</string>
     <string name="btn_start">BALL</string>
     <string name="btn_finish">CUP</string>
+    <string name="btn_result_data">결과data</string>
+    <string name="btn_measurement_data">측정data</string>
+    <string name="title_measurement_data">측정 데이터</string>
     <string name="btn_reset">RESET</string>
 
     <!-- Distance formats -->

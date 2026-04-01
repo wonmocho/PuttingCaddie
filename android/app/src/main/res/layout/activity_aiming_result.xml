@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Graphic slope UI (ported from PuttingCaddyPro) -->
+    <com.wmcho.puttingcaddie.ui.AimmingOverlayView
+        android:id="@+id/aiming_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="false" />
+
+    <!-- Simulation badge (top-left) -->
+    <TextView
+        android:id="@+id/tv_simulation_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:text="SIMULATION"
+        android:textSize="10sp"
+        android:textColor="#FFC107"
+        android:background="#80000000"
+        android:padding="6dp"
+        android:elevation="10dp"
+        android:visibility="gone" />
+
+    <!-- Debug: distance quality banner (debuggable builds; set from graphic bundle) -->
+    <TextView
+        android:id="@+id/tv_distance_debug"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_marginStart="12dp"
+        android:layout_marginTop="44dp"
+        android:maxWidth="300dp"
+        android:maxLines="10"
+        android:ellipsize="end"
+        android:textSize="11sp"
+        android:textColor="#B2EBF2"
+        android:background="#CC000000"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="5dp"
+        android:elevation="10dp"
+        android:visibility="gone" />
+
+    <!-- Bottom action bar -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:layout_marginStart="14dp"
+        android:layout_marginEnd="14dp"
+        android:layout_marginTop="14dp"
+        android:layout_marginBottom="10mm"
+        android:background="@android:color/transparent"
+        android:padding="0dp"
+        android:gravity="center"
+        android:elevation="0dp">
+
+        <Button
+            android:id="@+id/btn_back"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/pro_btn_remeasure"
+            android:layout_marginEnd="10dp"
+            android:padding="8dp"
+            android:minWidth="80dp"
+            android:textSize="12sp"
+            android:backgroundTint="#757575"
+            android:textColor="@android:color/white" />
+
+        <Button
+            android:id="@+id/btn_data"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/pro_btn_analysis_detail"
+            android:padding="8dp"
+            android:minWidth="100dp"
+            android:textSize="12sp"
+            android:backgroundTint="#2196F3"
+            android:textColor="@android:color/white" />
+
+    </LinearLayout>
+
+</FrameLayout>

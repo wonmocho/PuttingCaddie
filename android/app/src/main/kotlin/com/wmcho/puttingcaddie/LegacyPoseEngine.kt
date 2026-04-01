@@ -62,6 +62,8 @@ class LegacyPoseEngine : MeasurementEngine {
             ballGroundPlaneExtentX = null,
             ballGroundPlaneExtentZ = null,
             ballCupPlaneAngleDeg = null,
+            ballCupSamePlane = null,
+            cupPlaneType = null,
             liveRawMeters = null,
             centerHitValid = null,
             multiRayGridHalfSpanPx = null,

@@ -11,6 +11,10 @@ import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
 import java.util.ArrayDeque
+import com.wmcho.puttingcaddie.slope.LocalSurfaceFitInputProvider
+import com.wmcho.puttingcaddie.slope.PlaneBaselineInputProvider
+import com.wmcho.puttingcaddie.slope.SlopeInputResult
+import com.wmcho.puttingcaddie.slope.SlopeRawSamplesData
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -29,6 +33,16 @@ class V31StateMachine(
     private val poseStats: PoseStatsMad,
     private val debugLoggingEnabled: Boolean = false
 ) {
+    private val localSurfaceFitProvider = LocalSurfaceFitInputProvider(sampler)
+
+    /** [DistanceMeasurementActivity] 필드 테스트 prefs — LocalSurfaceFit experimentalDiagnostics에 기록 */
+    @Volatile var slopeTestSessionId: String? = null
+    @Volatile var slopeRepeatIndex: Int? = null
+    @Volatile var slopeTargetScenario: String? = null
+
+    // Slope Input 2.0: tick 시 frame/roi를 buildUi에서 사용
+    private var tickFrame: Frame? = null
+    private var tickRoiScreen: RectF? = null
     // Debug-only diagnostics for XYZ H/V issues (no UI exposure).
     private var dbgLastHvLogNs: Long = 0L
     private var dbgLastZoomHitLogNs: Long = 0L
@@ -38,6 +52,8 @@ class V31StateMachine(
     private var lastCupEnableGateLogNs: Long = 0L
     private var lastCupDetectStateLogNs: Long = 0L
     private var lastCupFixAttemptLogNs: Long = 0L
+    /** RESULT 진입 시 1회만 [SlopeFieldTestLog] 남기기 위한 전이 감지 */
+    private var lastEngineStateForSlopeFieldLog: State? = null
     private var dbgPrevH: Float = Float.NaN
     private var dbgPrevV: Float = Float.NaN
 
@@ -133,10 +149,12 @@ class V31StateMachine(
         val ballGroundPlaneType: String?,
         val ballGroundPlaneTrackingState: String?,
         val ballGroundPlaneHitDistanceFromCameraMeters: Float?,
-        val ballGroundPlaneExtentX: Float?,
+        val         ballGroundPlaneExtentX: Float?,
         val ballGroundPlaneExtentZ: Float?,
         // GREENIQ Plane consistency (logged at CUP fix)
         val ballCupPlaneAngleDeg: Float?,
+        val ballCupSamePlane: Boolean?,
+        val cupPlaneType: String?,
         // GREENIQ LIVE minimal diagnostics (for 6m rotation issue analysis)
         val liveRawMeters: Float?,        // raw distance BEFORE smoothing/clamp
         val centerHitValid: Boolean?,     // true iff LIVE raw was available (intersection or fallback)
@@ -178,7 +196,78 @@ class V31StateMachine(
         val ballArWarmupSuccessCount: Int? = null,
         val ballArWarmupRequired: Int? = null,
         // Debug: CUP 버튼 막힌 이유 (개발 빌드에서만 표시)
-        val cupBlockedReason: String? = null
+        val cupBlockedReason: String? = null,
+        val slopeDebugInfo: SlopeDebugInfo? = null,
+        val trackingState: String? = null,  // Slope Debug: GOOD/LIMITED/BAD
+        val anchorDistanceMeters: Float? = null,  // Slope Debug: anchor-to-anchor (거리 vs h 비교용)
+        // Slope 2nd gen Phase 1: 입력 소스 진단
+        val slopeInputSource: String? = null,
+        val ballTrackableType: String? = null,
+        val cupTrackableType: String? = null,
+        val deltaYRaw: Float? = null,
+        val ballNormalSource: String? = null,
+        val cupNormalSource: String? = null,
+        val slopeExperimentalResult: SlopeInputResult? = null,
+        /** P3 Step 1: ball∪cup shared plane + [SlopeComputer.computeSharedOnly]. 제품 경사 미교체. */
+        val experimentalSharedSlope: SlopeDebugInfo? = null,
+        val sharedPlaneFitResidualM: Float? = null,
+        val sharedPlaneSampleCount: Int? = null,
+        /** P3 후보 선택·trim/corridor·JSON·Logcat용 */
+        val sharedP3Log: SharedP3LogPayload? = null,
+        /** CUP lock 직후 캡처한 LIVE/거리 진단(RESULT에서만 의미 있음). */
+        val distanceLockLiveSource: String? = null,
+        val distanceLockLiveRawM: Float? = null,
+        val distanceLockLiveSigmaM: Float? = null,
+        val distanceLockLiveRangeM: Float? = null,
+        val distanceLockLiveStable: Boolean? = null,
+        val distanceFinalFallbackUsed: Boolean = false,
+        val distanceFinalSnapshotReason: String? = null,
+        /** [FinalDistanceGuard] — RESULT 전용 */
+        val finalDistanceLivePlaneMeters: Float? = null,
+        val finalDistanceSourceBeforeGuard: String? = null,
+        val finalDistanceSourceAfterGuard: String? = null,
+        val finalDistanceGuardTriggered: Boolean = false,
+        val finalDistanceGuardReasons: String? = null,
+        val finalDistanceAnchorInvalidReason: String? = null,
+        val planeIntersectionVsAnchorDeltaM: Float? = null,
+        val planeIntersectionVsAnchorDeltaRatio: Float? = null,
+        /** 앵커 포즈 월드 위치 [x,y,z] — 로그/JSON 전용 */
+        val ballAnchorWorld: FloatArray? = null,
+        val cupAnchorWorld: FloatArray? = null,
+        /** 앵커가 생성된 UI 상태 (confirmLock 시점) */
+        val ballAnchorSourceState: String? = null,
+        val cupAnchorSourceState: String? = null,
+        val anchorHorizontalM: Float? = null,
+        val anchor3dM: Float? = null,
+        /** 컵 앵커 생성 시각(ms). [anchorCreatedAtMs]와 동일(마지막 앵커 커밋). */
+        val startAnchorCreatedAtMs: Long? = null,
+        val endAnchorCreatedAtMs: Long? = null,
+        val anchorCreatedAtMs: Long? = null,
+        /** 이전 세션 앵커를 detach 후 교체했는지(동일 측정 흐름 내 재락) */
+        val anchorReused: Boolean? = null,
+        /** [tx,ty,tz,qw,qx,qy,qz] */
+        val startAnchorPose: FloatArray? = null,
+        val endAnchorPose: FloatArray? = null,
+        /** END_LOCK 직전 LIVE가 쓴 컵 쪽 월드 좌표(레이–면 교차 또는 hitTest) */
+        val ballLiveHitWorldAtFinish: FloatArray? = null,
+        val cupLiveHitWorldAtFinish: FloatArray? = null,
+        val cupAnchorHitWorldBeforeSnap: FloatArray? = null,
+        val cupAnchorPoseWorldAfterSnap: FloatArray? = null,
+        val cupAnchorCommitTrackableType: String? = null,
+        val cupAnchorCommitTrackableId: String? = null,
+        /** END_LOCK 직전: 커밋 후보(hit) vs [cupLiveHitWorldAtFinish] XZ 거리(m) — 게이트와 동일 정의 */
+        val cupCandidateVsLiveHitXZDeltaMAtCommit: Float? = null,
+        val cupEndAnchorCommitStrictFar: Boolean? = null,
+        val cupEndAnchorCommitGateThresholdM: Float? = null,
+        val cupEndAnchorGateBypassedMaxRetries: Boolean? = null,
+        /** [cupEndAnchorGateBypassedMaxRetries] 와 동일 — 통계/파서용 별칭 */
+        val cupEndAnchorCommitBypassSession: Boolean? = null,
+        /** 컵 END 경로: 이번 틱 LIVE 갱신에 사용한 프레임 타임스탬프(ns). 멀티레이 정렬·게이트 동일 */
+        val cupLiveWorldFrameTimestampNs: Long? = null,
+        /** END_LOCKED/RESULT: [SlopeInputProjection] 결과 (필드 검증 로그용). */
+        val slopeProjectionSnapshot: SlopeInputProjection.Result? = null,
+        /** 투영 좌표 기준 컵−볼 Y 차이(m): slopeCup.y − slopeBall.y */
+        val deltaYProjected: Float? = null
     )
 
     // v3.1 constants
@@ -294,6 +383,8 @@ class V31StateMachine(
     private val CUP_SOFT_LOCK_SIGMA_MARGIN_M = 0.015f  // threshold +1.5cm
     private val CUP_SOFT_LOCK_MIN_VALID_HITS = 9
     private val CUP_SOFT_LOCK_MIN_PROJECTED_PX = 18f
+    /** 컵 END 앵커 게이트: 연속 veto 상한 초과 시 한 번만 우회(무한 대기 방지) */
+    private val CUP_END_ANCHOR_GATE_MAX_RETRIES = 12
 
     // AR warm-up: 최근 N프레임 윈도우 내 중앙 hit 성공 횟수로 판단
     // BALL 1차: 상수화 + 초기 2.5초 완화 (35→28)
@@ -342,6 +433,33 @@ class V31StateMachine(
 
     private var startAnchor: Anchor? = null
     private var endAnchor: Anchor? = null
+    private var startAnchorCreatedAtMs: Long? = null
+    private var endAnchorCreatedAtMs: Long? = null
+    private var ballAnchorReplacedPrevious: Boolean = false
+    private var cupAnchorReplacedPrevious: Boolean = false
+    private var lastTickTrackingStateName: String = "UNKNOWN"
+
+    /** 마지막 유효 LIVE(컵 ROI) 거리에 쓰인 컵 쪽 월드 좌표 — END_LOCK 스냅샷용 */
+    private var lastLiveCupWorldForDistance: FloatArray? = null
+    /** [lastLiveCupWorldForDistance] 갱신 시점의 ARCore [Frame.getTimestamp] (ns) — 멀티레이·게이트 동일 tick 정렬용 */
+    private var lastLiveCupWorldFrameTimestampNs: Long? = null
+    /** [CupEndAnchorCommitPolicy] 게이트 연속 차단 횟수 — 상한 시 우회 */
+    private var cupEndAnchorGateRetryCount: Int = 0
+    /** 직전 [shouldBlockCupEndAnchorCommit]에서 max_retries 우회로 커밋 허용된 경우 — [confirmLock]에서 스냅샷 후 클리어 */
+    private var cupEndAnchorGateBypassedMaxRetriesPending: Boolean = false
+
+    private var capturedBallLiveHitWorldAtFinish: FloatArray? = null
+    private var capturedCupLiveHitWorldAtFinish: FloatArray? = null
+    private var capturedCupAnchorHitWorldBeforeSnap: FloatArray? = null
+    private var capturedCupAnchorPoseWorldAfterSnap: FloatArray? = null
+    private var capturedCupAnchorCommitTrackableType: String? = null
+    private var capturedCupAnchorCommitTrackableId: String? = null
+    /** 커밋 직전 후보 vs LIVE XZ(m) — 피드백 JSON */
+    private var capturedCupEndAnchorCommitGateDeltaM: Float? = null
+    private var capturedCupEndAnchorGateStrictFar: Boolean? = null
+    private var capturedCupEndAnchorGateThresholdM: Float? = null
+    private var capturedCupEndAnchorGateBypassedMaxRetries: Boolean? = null
+    private var capturedCupLiveWorldFrameTimestampNs: Long? = null
 
     private val buf = ArrayList<PoseStatsMad.Vec3>(96)
     private var lastAimSample: V31HitSampler.Sample? = null
@@ -403,10 +521,47 @@ class V31StateMachine(
     private var ballGroundPlaneExtentX: Float? = null
     private var ballGroundPlaneExtentZ: Float? = null
     private var ballCupPlaneAngleDeg: Float? = null
+    private var cupPlaneNormal: PoseStatsMad.Vec3? = null
+    /** CUP_FIX 시 컵 Plane 히트 지점(주변 그린 면 기준점용), world */
+    private var cupPlanePointFix: FloatArray? = null
+    // Slope diagnostics: BALL fix 시 plane 저장, CUP fix 시 samePlane/cupPlaneType 확정
+    private var ballPlaneAtFix: Plane? = null
+    private var ballCupSamePlane: Boolean? = null
+    private var cupPlaneType: String? = null
+    // Slope 2nd gen Phase 1: 입력 소스 진단
+    private var ballTrackableType: String? = null
+    private var cupTrackableType: String? = null
+    private var slopePhase1ResultLogged: Boolean = false
+    private var slopeSharedP3Logged: Boolean = false
+    private var slopeInputProjectionLogged: Boolean = false
+    /** SharedP3 normal 방향 최소 temporal 일관성 (측정 리셋 시 초기화) */
+    private var lastSharedP3NormalWorld: FloatArray? = null
+
+    // Slope v1: BALL_FIX/CUP_FIX 시점에 수집한 experimental slope 샘플
+    private var experimentalBallSlopeSamples: SlopeRawSamplesData? = null
+    private var experimentalCupSlopeSamples: SlopeRawSamplesData? = null
 
     // LIVE minimal diagnostics (must not affect computation)
     private var liveRawMeters: Float? = null
     private var centerHitValid: Boolean? = null
+
+    /** END_LOCKED에서 최종 거리 스냅샷 직전 캡처 ([DistanceFieldTestLog] / 피드백 JSON용). */
+    private var capturedDistanceLockLiveSource: String? = null
+    private var capturedDistanceLockLiveRawM: Float? = null
+    private var capturedDistanceLockLiveSigmaM: Float? = null
+    private var capturedDistanceLockLiveRangeM: Float? = null
+    private var capturedDistanceLockLiveStable: Boolean? = null
+    private var capturedDistanceFinalFallbackUsed: Boolean = false
+    private var capturedDistanceFinalSnapshotReason: String? = null
+
+    private var capturedFinalDistanceLivePlaneMeters: Float? = null
+    private var capturedFinalDistanceSourceBeforeGuard: String? = null
+    private var capturedFinalDistanceSourceAfterGuard: String? = null
+    private var capturedFinalDistanceGuardTriggered: Boolean = false
+    private var capturedFinalDistanceGuardReasons: String? = null
+    private var capturedFinalDistanceAnchorInvalidReason: String? = null
+    private var capturedPlaneVsAnchorDeltaM: Float? = null
+    private var capturedPlaneVsAnchorDeltaRatio: Float? = null
 
     // GREENIQ Cup multi-ray diagnostics (copied from sampler output for logging)
     private var lastMultiRayGridHalfSpanPx: Float? = null
@@ -676,6 +831,24 @@ class V31StateMachine(
                         ballLastGoodNs = 0L
                         startAnchor?.detach(); startAnchor = null
                         endAnchor?.detach(); endAnchor = null
+                        startAnchorCreatedAtMs = null
+                        endAnchorCreatedAtMs = null
+                        ballAnchorReplacedPrevious = false
+                        cupAnchorReplacedPrevious = false
+                        lastLiveCupWorldForDistance = null
+                        lastLiveCupWorldFrameTimestampNs = null
+                        cupEndAnchorGateRetryCount = 0
+                        capturedBallLiveHitWorldAtFinish = null
+                        capturedCupLiveHitWorldAtFinish = null
+                        capturedCupAnchorHitWorldBeforeSnap = null
+                        capturedCupAnchorPoseWorldAfterSnap = null
+                        capturedCupAnchorCommitTrackableType = null
+                        capturedCupAnchorCommitTrackableId = null
+                        capturedCupEndAnchorCommitGateDeltaM = null
+                        capturedCupEndAnchorGateStrictFar = null
+                        capturedCupEndAnchorGateThresholdM = null
+                        capturedCupEndAnchorGateBypassedMaxRetries = null
+                        capturedCupLiveWorldFrameTimestampNs = null
                         lastAimSample = null
                         farModeHoldStartNs = 0L
                         useFarModeLiveMedianAtEndLock = false
@@ -691,6 +864,9 @@ class V31StateMachine(
                         resetLiveMedianWindow()
                         startRequestPending = true
                         resetEndDisplayBuf()
+                        experimentalBallSlopeSamples = null
+                        experimentalCupSlopeSamples = null
+                        lastSharedP3NormalWorld = null
                     }
                     State.AIM_START -> {
                         startRequestPending = true
@@ -730,11 +906,7 @@ class V31StateMachine(
                         }
                     }
                     State.END_LOCKED -> {
-                        // Final distance SSOT: LIVE snapshot (never WP/anchor-based distance).
-                        finalDistanceMeters =
-                            endLiveSnapshotMeters.takeIf { it.isFinite() && it > 0f }
-                                ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
-                                ?: 0f
+                        commitFinalDistanceWithGuard()
                         if (debugLoggingEnabled) {
                             val usedFallback = !(endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f) &&
                                 (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
@@ -770,6 +942,8 @@ class V31StateMachine(
     }
 
     fun tick(frame: Frame, roiScreen: RectF, nowNs: Long): UiModel {
+        tickFrame = frame
+        tickRoiScreen = roiScreen
         // START_LOCKED is a transient state (kept for spec alignment).
         if (state == State.START_LOCKED && startLockedAtNs > 0L) {
             // Keep at least one tick; then proceed.
@@ -782,10 +956,7 @@ class V31StateMachine(
         // END_LOCKED is also transient: auto-finalize RESULT without second tap.
         if (state == State.END_LOCKED && endLockedAtNs > 0L) {
             if (nowNs - endLockedAtNs >= 1L) {
-                finalDistanceMeters =
-                    endLiveSnapshotMeters.takeIf { it.isFinite() && it > 0f }
-                        ?: lastDisplayDistanceMeters.takeIf { it.isFinite() && it > 0f }
-                        ?: 0f
+                commitFinalDistanceWithGuard()
                 if (debugLoggingEnabled) {
                     val usedFallback = !(endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f) &&
                         (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
@@ -810,6 +981,7 @@ class V31StateMachine(
         }
 
         val tracking = frame.camera.trackingState
+        lastTickTrackingStateName = tracking.name
 
         // STOPPED => immediate FAIL
         if (tracking == TrackingState.STOPPED) {
@@ -868,6 +1040,128 @@ class V31StateMachine(
             pushCupCenterHistory(PointF(roiScreen.centerX(), roiScreen.centerY()))
         }
 
+        // GREENIQ LIVE (laser): 컵 AIM/END에서 멀티레이·게이트가 동일 tick의 LIVE를 쓰도록 샘플보다 먼저 갱신.
+        val inLiveStates = (state == State.AIM_END || state == State.STABILIZING_END)
+        if (inLiveStates && startAnchor != null) {
+            var raw: Float? = null
+            liveSource = LiveSource.NONE
+            liveRawMeters = null
+            centerHitValid = false
+
+            val gp = groundPlaneModel
+            if (gp != null) {
+                val camPose = frame.camera.pose
+                val uv = sampler.screenPointToAdjustedTextureUv(frame, roiScreen.centerX(), roiScreen.centerY())
+                val intr = frame.camera.textureIntrinsics
+                if (uv != null) {
+                    val dims = intr.imageDimensions
+                    val texW = dims[0].toFloat().takeIf { it > 1f } ?: 1f
+                    val texH = dims[1].toFloat().takeIf { it > 1f } ?: 1f
+                    val xPx = (uv.x.coerceIn(0f, 1f) * texW)
+                    val yPx = (uv.y.coerceIn(0f, 1f) * texH)
+
+                    val fx = intr.focalLength[0].takeIf { it > 1e-6f } ?: 1f
+                    val fy = intr.focalLength[1].takeIf { it > 1e-6f } ?: 1f
+                    val cx = intr.principalPoint[0]
+                    val cy = intr.principalPoint[1]
+
+                    var dx = (xPx - cx) / fx
+                    var dy = (yPx - cy) / fy
+                    var dz = -1f
+                    val norm = sqrt(dx * dx + dy * dy + dz * dz).takeIf { it > 1e-6f } ?: 1f
+                    dx /= norm; dy /= norm; dz /= norm
+
+                    val dirCam = floatArrayOf(dx, dy, dz)
+                    val dirWorld = FloatArray(3)
+                    camPose.rotateVector(dirCam, 0, dirWorld, 0)
+
+                    val ox = camPose.tx()
+                    val oy = camPose.ty()
+                    val oz = camPose.tz()
+
+                    val nx = gp.normal.x
+                    val ny = gp.normal.y
+                    val nz = gp.normal.z
+                    val denom = (nx * dirWorld[0] + ny * dirWorld[1] + nz * dirWorld[2])
+                    if (abs(dirWorld[1]) >= LIVE_RAYDIR_Y_EPS && abs(denom) > 1e-5f) {
+                        val px = gp.pointOnPlane.x
+                        val py = gp.pointOnPlane.y
+                        val pz = gp.pointOnPlane.z
+                        val t = (nx * (px - ox) + ny * (py - oy) + nz * (pz - oz)) / denom
+                        if (t.isFinite() && t > 0f && t <= LIVE_MAX_HIT_DISTANCE_M) {
+                            val ix = ox + (dirWorld[0] * t)
+                            val iy = oy + (dirWorld[1] * t)
+                            val iz = oz + (dirWorld[2] * t)
+                            val iPose = Pose.makeTranslation(ix, iy, iz)
+                            raw = distanceFromStartToPoseMeters(startAnchor!!.pose, iPose)
+                            liveSource = LiveSource.PLANE_INTERSECTION
+                            lastLiveCupWorldForDistance = floatArrayOf(ix, iy, iz)
+                            lastLiveCupWorldFrameTimestampNs = frame.timestamp
+                        }
+                    }
+                }
+            }
+
+            if (raw == null) {
+                val centerHit =
+                    sampler.hitTestBestPlaneAtScreenPoint(
+                        frame = frame,
+                        screenX = roiScreen.centerX(),
+                        screenY = roiScreen.centerY(),
+                        maxDistanceMeters = LIVE_MAX_HIT_DISTANCE_M,
+                        preferUpwardFacing = false,
+                        yBelowCameraMeters = null,
+                        preferFarthestForDistance = true
+                    )
+                if (centerHit != null) {
+                    raw = distanceFromStartToPoseMeters(startAnchor!!.pose, centerHit.hitPose)
+                    liveSource = LiveSource.HITTEST_FALLBACK
+                    val p = centerHit.hitPose
+                    lastLiveCupWorldForDistance = floatArrayOf(p.tx(), p.ty(), p.tz())
+                    lastLiveCupWorldFrameTimestampNs = frame.timestamp
+                }
+            }
+
+            if (raw != null && raw!!.isFinite() && raw!! > 0f) {
+                val cur = raw!!
+                liveRawMeters = cur
+                centerHitValid = true
+                if (!liveHasValue) {
+                    liveSmoothedMeters = cur
+                    liveHasValue = true
+                } else {
+                    val prev = liveSmoothedMeters
+                    val delta = (cur - prev).coerceIn(-LIVE_MAX_FRAME_DELTA_M, LIVE_MAX_FRAME_DELTA_M)
+                    val curClamped = prev + delta
+                    val jumpLimit = max(LIVE_JUMP_GUARD_M, prev * 0.35f)
+                    if (abs(curClamped - prev) <= jumpLimit) {
+                        liveSmoothedMeters = (prev * 0.75f) + (curClamped * 0.25f)
+                    }
+                }
+                pushLiveMedianWindow(liveSmoothedMeters)
+                pushLiveStability(liveSmoothedMeters)
+                if (debugLoggingEnabled && nowNs - dbgLastZoomHitLogNs >= 300_000_000L) {
+                    dbgLastZoomHitLogNs = nowNs
+                    val prevS = lastAimSample
+                    Log.d(
+                        "ZOOM_HIT",
+                        "state=$state src=${liveSource.name} raw=${"%.3f".format(cur)} smooth=${"%.3f".format(liveSmoothedMeters)} " +
+                            "bestHitDist=${"%.3f".format(prevS?.bestHit?.distance ?: 0f)} hitType=${prevS?.hitType} valid=${prevS?.validHits ?: 0}/${prevS?.totalPoints ?: 0}"
+                    )
+                }
+            }
+        } else {
+            liveHasValue = false
+            liveSmoothedMeters = 0f
+            liveSource = LiveSource.NONE
+            liveRawMeters = null
+            centerHitValid = null
+            lastLiveCupWorldForDistance = null
+            lastLiveCupWorldFrameTimestampNs = null
+            resetLiveMedianWindow()
+            resetLiveStabilityBuf()
+        }
+
         val grid =
             when (state) {
                 State.AIM_END, State.STABILIZING_END -> CUP_GRID_SIZE_POINTS
@@ -885,6 +1179,7 @@ class V31StateMachine(
                     } else {
                         roiScreen
                     }
+                val cupLiveAlignForHitPick = cupLiveAlignForMultiRaySample()
                 // Cup FIX sampling: multi-ray 5x5 centered near screen center with Y offset and distance/Y guards.
                 var s =
                     sampler.sampleCupPlaneMultiRay(
@@ -896,7 +1191,8 @@ class V31StateMachine(
                         maxHitDistanceMeters = 12f,
                         yBelowCameraMeters = 0.1f,
                         preferUpwardFacing = true,
-                        requireUpwardFacing = false
+                        requireUpwardFacing = false,
+                        liveWorldAlignForHitPick = cupLiveAlignForHitPick
                     )
                 updateFarPrecisionMode(s.bestHit?.distance ?: Float.NaN, s.gridProjectedCupPx)
                 val projectedPx = s.gridProjectedCupPx
@@ -923,7 +1219,8 @@ class V31StateMachine(
                             yBelowCameraMeters = 0.05f,
                             preferUpwardFacing = true,
                             requireUpwardFacing = false,
-                            forceFar5x5 = true
+                            forceFar5x5 = true,
+                            liveWorldAlignForHitPick = cupLiveAlignForHitPick
                         )
                     val modeSwitchReason =
                         when {
@@ -972,7 +1269,8 @@ class V31StateMachine(
                                 retryForceFar5 ||
                                     (farPrecisionMode && retryProjectedPx != null && retryProjectedPx < CUP_PROJECTED_PX_CONDITIONAL_FAR5) ||
                                     retryConditionalFar5 ||
-                                    (retryProjectedPx == null && s.validHits <= 2)
+                                    (retryProjectedPx == null && s.validHits <= 2),
+                            liveWorldAlignForHitPick = cupLiveAlignForHitPick
                         )
                     val modeSwitchReason =
                         when {
@@ -1142,132 +1440,6 @@ class V31StateMachine(
             ballDiagFreezeAgeMs = null
             ballDiagJumpRejected = null
             ballDiagFixState = null
-        }
-
-        // GREENIQ LIVE (laser): prefer ray-plane intersection against saved ground plane.
-        // Fallback to relaxed plane hitTest only if intersection is unavailable.
-        // Display-only; does not affect locking logic.
-        val inLiveStates = (state == State.AIM_END || state == State.STABILIZING_END)
-        if (inLiveStates && startAnchor != null) {
-            var raw: Float? = null
-            liveSource = LiveSource.NONE
-            // reset per-tick LIVE diagnostics
-            liveRawMeters = null
-            centerHitValid = false
-
-            // 1) Ray-plane intersection (primary)
-            val gp = groundPlaneModel
-            if (gp != null) {
-                val camPose = frame.camera.pose
-                val uv = sampler.screenPointToAdjustedTextureUv(frame, roiScreen.centerX(), roiScreen.centerY())
-                val intr = frame.camera.textureIntrinsics
-                if (uv != null) {
-                    val dims = intr.imageDimensions
-                    val texW = dims[0].toFloat().takeIf { it > 1f } ?: 1f
-                    val texH = dims[1].toFloat().takeIf { it > 1f } ?: 1f
-                    val xPx = (uv.x.coerceIn(0f, 1f) * texW)
-                    val yPx = (uv.y.coerceIn(0f, 1f) * texH)
-
-                    val fx = intr.focalLength[0].takeIf { it > 1e-6f } ?: 1f
-                    val fy = intr.focalLength[1].takeIf { it > 1e-6f } ?: 1f
-                    val cx = intr.principalPoint[0]
-                    val cy = intr.principalPoint[1]
-
-                    // Camera coordinates: +X right, +Y up, -Z forward.
-                    var dx = (xPx - cx) / fx
-                    var dy = (yPx - cy) / fy
-                    var dz = -1f
-                    val norm = sqrt(dx * dx + dy * dy + dz * dz).takeIf { it > 1e-6f } ?: 1f
-                    dx /= norm; dy /= norm; dz /= norm
-
-                    val dirCam = floatArrayOf(dx, dy, dz)
-                    val dirWorld = FloatArray(3)
-                    camPose.rotateVector(dirCam, 0, dirWorld, 0)
-
-                    val ox = camPose.tx()
-                    val oy = camPose.ty()
-                    val oz = camPose.tz()
-
-                    val nx = gp.normal.x
-                    val ny = gp.normal.y
-                    val nz = gp.normal.z
-                    val denom = (nx * dirWorld[0] + ny * dirWorld[1] + nz * dirWorld[2])
-                    // Additional sanity: if the ray is near-horizontal, intersection becomes numerically unstable.
-                    if (abs(dirWorld[1]) >= LIVE_RAYDIR_Y_EPS && abs(denom) > 1e-5f) {
-                        val px = gp.pointOnPlane.x
-                        val py = gp.pointOnPlane.y
-                        val pz = gp.pointOnPlane.z
-                        val t = (nx * (px - ox) + ny * (py - oy) + nz * (pz - oz)) / denom
-                        if (t.isFinite() && t > 0f && t <= LIVE_MAX_HIT_DISTANCE_M) {
-                            val ix = ox + (dirWorld[0] * t)
-                            val iy = oy + (dirWorld[1] * t)
-                            val iz = oz + (dirWorld[2] * t)
-                            val iPose = Pose.makeTranslation(ix, iy, iz)
-                            raw = distanceFromStartToPoseMeters(startAnchor!!.pose, iPose)
-                            liveSource = LiveSource.PLANE_INTERSECTION
-                        }
-                    }
-                }
-            }
-
-            // 2) Fallback: hitTest with FARTHEST hit (ball-to-cup; camera may be behind ball)
-            if (raw == null) {
-                val centerHit =
-                    sampler.hitTestBestPlaneAtScreenPoint(
-                        frame = frame,
-                        screenX = roiScreen.centerX(),
-                        screenY = roiScreen.centerY(),
-                        maxDistanceMeters = LIVE_MAX_HIT_DISTANCE_M,
-                        preferUpwardFacing = false,
-                        yBelowCameraMeters = null,
-                        preferFarthestForDistance = true
-                    )
-                if (centerHit != null) {
-                    raw = distanceFromStartToPoseMeters(startAnchor!!.pose, centerHit.hitPose)
-                    liveSource = LiveSource.HITTEST_FALLBACK
-                }
-            }
-
-            if (raw != null && raw!!.isFinite() && raw!! > 0f) {
-                val cur = raw!!
-                // Record raw distance BEFORE smoothing/clamp (diagnostic only)
-                liveRawMeters = cur
-                centerHitValid = true
-                if (!liveHasValue) {
-                    liveSmoothedMeters = cur
-                    liveHasValue = true
-                } else {
-                    val prev = liveSmoothedMeters
-                    // Frame clamp: limit change per frame for smooth display on rapid camera move
-                    val delta = (cur - prev).coerceIn(-LIVE_MAX_FRAME_DELTA_M, LIVE_MAX_FRAME_DELTA_M)
-                    val curClamped = prev + delta
-                    val jumpLimit = max(LIVE_JUMP_GUARD_M, prev * 0.35f)
-                    if (abs(curClamped - prev) <= jumpLimit) {
-                        // Balanced inertia (75/25): smoother than baseline, faster than 85/15
-                        liveSmoothedMeters = (prev * 0.75f) + (curClamped * 0.25f)
-                    }
-                }
-                pushLiveMedianWindow(liveSmoothedMeters)
-                pushLiveStability(liveSmoothedMeters)
-                if (debugLoggingEnabled && nowNs - dbgLastZoomHitLogNs >= 300_000_000L) {
-                    dbgLastZoomHitLogNs = nowNs
-                    Log.d(
-                        "ZOOM_HIT",
-                        "state=$state src=${liveSource.name} raw=${"%.3f".format(cur)} smooth=${"%.3f".format(liveSmoothedMeters)} " +
-                            "bestHitDist=${"%.3f".format(sample.bestHit?.distance ?: 0f)} hitType=${sample.hitType} valid=${sample.validHits}/${sample.totalPoints}"
-                    )
-                }
-            }
-            // If no valid raw: keep previous live (per directive).
-        } else {
-            // Not in LIVE states (or BALL not fixed): reset display live to avoid stale values.
-            liveHasValue = false
-            liveSmoothedMeters = 0f
-            liveSource = LiveSource.NONE
-            liveRawMeters = null
-            centerHitValid = null
-            resetLiveMedianWindow()
-            resetLiveStabilityBuf()
         }
 
         // --- Debug diagnostics (XYZ mode) ---
@@ -1513,14 +1685,16 @@ class V31StateMachine(
                     val projOk = proj != null && proj.isFinite() && proj >= CUP_SOFT_LOCK_MIN_PROJECTED_PX
                     val sigmaNearOk = sigmaMax > 1e-6f && sigmaUsed <= sigmaMax + CUP_SOFT_LOCK_SIGMA_MARGIN_M
                     if (hit != null && validOk && projOk && sigmaNearOk) {
-                        confirmLock(nowNs, hit)
-                        buf.clear()
-                        lastAimSample = null
-                        if (debugLoggingEnabled) {
-                            Log.d("CUP_LOCK_GATE", "softLock=true sigmaUsed=${"%.3f".format(sigmaUsed)} sigmaMax=${"%.3f".format(sigmaMax)} " +
-                                "projectedPx=${"%.1f".format(proj)} validHits=${sample.validHits}")
+                        if (!shouldBlockCupEndAnchorCommit(hit, sample)) {
+                            confirmLock(nowNs, hit, sample)
+                            buf.clear()
+                            lastAimSample = null
+                            if (debugLoggingEnabled) {
+                                Log.d("CUP_LOCK_GATE", "softLock=true sigmaUsed=${"%.3f".format(sigmaUsed)} sigmaMax=${"%.3f".format(sigmaMax)} " +
+                                    "projectedPx=${"%.1f".format(proj)} validHits=${sample.validHits}")
+                            }
+                            return buildUi(nowNs, tracking, sample, flashLock = true)
                         }
-                        return buildUi(nowNs, tracking, sample, flashLock = true)
                     }
                 }
                 if (debugLoggingEnabled && lastFailDetailCode == "TIMEOUT_SIGMA_NOT_OK") {
@@ -1913,6 +2087,9 @@ class V31StateMachine(
                             farModeHoldStartNs = 0L
                         }
                     }
+                    if (state == State.STABILIZING_END && shouldBlockCupEndAnchorCommit(stabilizingHit, sample)) {
+                        return buildUi(nowNs, tracking, sample)
+                    }
                     if (debugLoggingEnabled && nowNs - lastCupFixAttemptLogNs >= 500_000_000L) {
                         lastCupFixAttemptLogNs = nowNs
                         val cupFixDistVal = startAnchor?.pose?.let { distanceMeters(it, stabilizingHit.hitPose) }
@@ -1922,7 +2099,7 @@ class V31StateMachine(
                             "lastDisplayDistanceMeters=${lastDisplayDistanceMeters.let { "%.3f".format(it) }} cupFixDist=${cupFixDistVal?.let { "%.3f".format(it) } ?: "null"} " +
                             "rejectedReason=none")
                     }
-                    confirmLock(nowNs, stabilizingHit)
+                    confirmLock(nowNs, stabilizingHit, sample)
                     sigmaOkConsecutive = 0
                     sigmaOkStartNs = 0L
                     buf.clear()
@@ -1999,6 +2176,7 @@ class V31StateMachine(
         lastSigmaMaxMeters = null
         buf.clear()
         resetEndDisplayBuf()
+        cupEndAnchorGateRetryCount = 0
 
         val start = startAnchor?.pose
         fixedDEstMeters =
@@ -2008,17 +2186,33 @@ class V31StateMachine(
         fixedMinSamples = chooseMinSamplesForDEst(fixedDEstMeters).coerceAtMost(END_MAX_MIN_SAMPLES)
     }
 
-    private fun confirmLock(nowNs: Long, hit: HitResult) {
-        val anchor = hit.createAnchor()
+    private fun confirmLock(nowNs: Long, hit: HitResult, endLockSample: V31HitSampler.Sample? = null) {
         when (state) {
             State.STABILIZING_START -> {
+                val anchor = hit.createAnchor()
+                ballAnchorReplacedPrevious = startAnchor != null
                 startAnchor?.detach()
                 startAnchor = anchor
+                startAnchorCreatedAtMs = System.currentTimeMillis()
                 state = State.START_LOCKED
                 startLockedAtNs = System.nanoTime()
 
+                // Slope v1: BALL_FIX 시점에 Ball slope 샘플 수집·저장 (카메라가 Ball 향함)
+                val roi = tickRoiScreen
+                val frame = tickFrame
+                if (roi != null && frame != null && axisMode == AxisMode.XYZ) {
+                    val ballCenter = PointF(roi.centerX(), roi.centerY())
+                    experimentalBallSlopeSamples = localSurfaceFitProvider.collectSamplesAtCenter(
+                        frame = frame,
+                        roiScreen = roi,
+                        screenCenter = ballCenter,
+                        collectedAtNs = nowNs
+                    )
+                }
+
                 // Capture ground plane model at BALL fix time for LIVE ray-plane intersection.
                 val t = hit.trackable
+                ballTrackableType = t?.javaClass?.simpleName ?: "Unknown"
                 val plane = t as? Plane
                 if (plane != null) {
                     val center = plane.centerPose
@@ -2035,6 +2229,7 @@ class V31StateMachine(
                             normal = PoseStatsMad.Vec3(nx, ny, nz),
                             source = "BALL_FIX_PLANE"
                         )
+                    ballPlaneAtFix = plane
                     // Diagnostics (quality proxy)
                     ballGroundPlaneNormalY = ny
                     ballGroundPlaneAbsNormalY = kotlin.math.abs(ny)
@@ -2051,13 +2246,16 @@ class V31StateMachine(
                             "valid=${ballDiagSampleValidHits ?: 0}/${ballDiagSampleTotalPoints ?: 0} grid=${ballDiagGridMode ?: "UNKNOWN"} stepPx=${ballDiagGridStepPx ?: 0f} " +
                             "planeType=${plane.type.name} absNy=${"%.3f".format(kotlin.math.abs(ny))}"
                     )
+                    Log.d("SLOPE_PHASE1", "BALL_FIX slopeInput=PLANE trackableType=$ballTrackableType planeType=${plane.type.name} normalY=${"%.3f".format(ny)}")
                     if (debugLoggingEnabled) {
                         Log.d("BALL_FIX_DIAGNOSTICS", "fixHitPose_x=${"%.4f".format(hit.hitPose.tx())} fixHitPose_y=${"%.4f".format(hit.hitPose.ty())} fixHitPose_z=${"%.4f".format(hit.hitPose.tz())} " +
                             "distanceFromCamera_m=${"%.3f".format(hit.distance)} fixSource=${ballDiagHitSourceUsed ?: "UNKNOWN"} validHits=${ballDiagSampleValidHits ?: 0} " +
                             "useFarthest=true gridCount=9")
                     }
                 } else {
+                    ballTrackableType = null
                     groundPlaneModel = null
+                    ballPlaneAtFix = null
                     ballGroundPlaneNormalY = null
                     ballGroundPlaneAbsNormalY = null
                     ballGroundPlaneNormalLen = null
@@ -2072,6 +2270,7 @@ class V31StateMachine(
                             "jumpRejected=${ballDiagJumpRejected ?: false} hitsWindow=$ballFixHitsInWindow/${BALL_FIX_WINDOW_FRAMES} ruleNeed=${currentBallFixNeedHits()} " +
                             "valid=${ballDiagSampleValidHits ?: 0}/${ballDiagSampleTotalPoints ?: 0} grid=${ballDiagGridMode ?: "UNKNOWN"} stepPx=${ballDiagGridStepPx ?: 0f} planeType=NONE"
                     )
+                    Log.d("SLOPE_PHASE1", "BALL_FIX slopeInput=NONE trackableType=$ballTrackableType planeType=NONE (plane cast failed)")
                     if (debugLoggingEnabled) {
                         Log.d("BALL_FIX_DIAGNOSTICS", "fixHitPose_x=${"%.4f".format(hit.hitPose.tx())} fixHitPose_y=${"%.4f".format(hit.hitPose.ty())} fixHitPose_z=${"%.4f".format(hit.hitPose.tz())} " +
                             "distanceFromCamera_m=${"%.3f".format(hit.distance)} fixSource=${ballDiagHitSourceUsed ?: "UNKNOWN"} validHits=${ballDiagSampleValidHits ?: 0} " +
@@ -2080,21 +2279,83 @@ class V31StateMachine(
                 }
             }
             State.STABILIZING_END -> {
+                val liveForGate = lastLiveCupWorldForDistance
+                capturedCupEndAnchorCommitGateDeltaM =
+                    if (liveForGate != null) {
+                        CupEndAnchorCommitPolicy.xzDistanceMeters(world3FromPose(hit.hitPose), liveForGate)
+                    } else {
+                        null
+                    }
+                val strictFarCommit =
+                    endLockSample?.let {
+                        CupEndAnchorCommitPolicy.strictFarMode(it.gridProjectedCupPx, null, it.validHits)
+                    }
+                        ?: CupEndAnchorCommitPolicy.strictFarMode(
+                            lastMultiRayProjectedCupPx,
+                            null,
+                            lastValidSampleCount ?: 0
+                        )
+                capturedCupEndAnchorGateStrictFar = strictFarCommit
+                capturedCupEndAnchorGateThresholdM =
+                    CupEndAnchorCommitPolicy.thresholdM(strictFarCommit)
+                capturedCupEndAnchorGateBypassedMaxRetries = cupEndAnchorGateBypassedMaxRetriesPending
+                cupEndAnchorGateBypassedMaxRetriesPending = false
+                capturedCupLiveWorldFrameTimestampNs = lastLiveCupWorldFrameTimestampNs
+
+                val cupHitWorldBeforeSnap = world3FromPose(hit.hitPose)
+                cupAnchorReplacedPrevious = endAnchor != null
                 endAnchor?.detach()
+                val anchor = hit.createAnchor()
+                val cupPoseWorldAfterSnap = world3FromPose(anchor.pose)
+                capturedCupAnchorHitWorldBeforeSnap = cupHitWorldBeforeSnap.copyOf()
+                capturedCupAnchorPoseWorldAfterSnap = cupPoseWorldAfterSnap.copyOf()
+                capturedBallLiveHitWorldAtFinish = startAnchor?.pose?.let { world3FromPose(it) }?.copyOf()
+                capturedCupLiveHitWorldAtFinish = lastLiveCupWorldForDistance?.copyOf()
+                capturedCupAnchorCommitTrackableType = hit.trackable?.javaClass?.simpleName
+                capturedCupAnchorCommitTrackableId = hit.trackable?.let { System.identityHashCode(it).toString() }
                 endAnchor = anchor
+                endAnchorCreatedAtMs = System.currentTimeMillis()
                 state = State.END_LOCKED
                 endLockedAtNs = nowNs
+                Log.d(
+                    "END_ANCHOR_COMMIT",
+                    "candidateBeforeSnap=${capturedCupAnchorHitWorldBeforeSnap?.contentToString()} " +
+                        "candidateAfterSnap=${capturedCupAnchorPoseWorldAfterSnap?.contentToString()} " +
+                        "trackableType=${capturedCupAnchorCommitTrackableType ?: "null"} " +
+                        "trackableId=${capturedCupAnchorCommitTrackableId ?: "null"} " +
+                        "ballLiveAtFinish=${capturedBallLiveHitWorldAtFinish?.contentToString()} " +
+                        "cupLiveAtFinish=${capturedCupLiveHitWorldAtFinish?.contentToString()}"
+                )
                 if (debugLoggingEnabled) {
                     val anchorDist = distanceBetweenAnchorsMeters()
                     Log.d("CUP_FIX_DIAGNOSTICS", "fixHitPose_x=${"%.4f".format(hit.hitPose.tx())} fixHitPose_y=${"%.4f".format(hit.hitPose.ty())} fixHitPose_z=${"%.4f".format(hit.hitPose.tz())} " +
                         "distanceFromCamera_m=${"%.3f".format(hit.distance)} fixSource=${lastMultiRayPlan ?: "UNKNOWN"} centerFallbackUsed=${lastMultiRayCenterFallbackUsed == true} " +
                         "validHits=${lastValidSampleCount ?: 0} useFarthest=false gridCount=25 anchorDistance_m=${"%.3f".format(anchorDist)}")
                 }
+                // Slope v1: CUP_FIX 시점에 Cup slope 샘플 수집·저장 (카메라가 Cup 향함)
+                val cupRoi = tickRoiScreen
+                val cupFrame = tickFrame
+                if (cupRoi != null && cupFrame != null && axisMode == AxisMode.XYZ) {
+                    val cupCenter = PointF(cupRoi.centerX(), cupRoi.centerY())
+                    experimentalCupSlopeSamples = localSurfaceFitProvider.collectSamplesAtCenter(
+                        frame = cupFrame,
+                        roiScreen = cupRoi,
+                        screenCenter = cupCenter,
+                        collectedAtNs = nowNs,
+                        gridHalfSteps = 2
+                    )
+                }
+
                 completeFirstMeasurementIfNeeded()
                 // LIVE stability gate: 통과 시 farMode → liveSmoothed, 실패 시 fallback
                 val stab = liveStabilitySigmaAndRangeOrNull()
                 val liveStable = stab != null &&
                     ((stab.first <= LIVE_STABILITY_MAX_SIGMA_M) || (stab.second <= LIVE_STABILITY_MAX_RANGE_M))
+                capturedDistanceLockLiveSource = liveSource.name
+                capturedDistanceLockLiveRawM = liveRawMeters
+                capturedDistanceLockLiveSigmaM = stab?.first
+                capturedDistanceLockLiveRangeM = stab?.second
+                capturedDistanceLockLiveStable = liveStable
                 val snapshotValue: Float? =
                     if (liveStable) {
                         if (useFarModeLiveMedianAtEndLock && (farModeLiveMedianAtEndLock?.isFinite() == true) && (farModeLiveMedianAtEndLock ?: 0f) > 0f) {
@@ -2104,6 +2365,14 @@ class V31StateMachine(
                         } else null
                     } else {
                         null
+                    }
+                capturedDistanceFinalFallbackUsed =
+                    (snapshotValue == null) && (lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f)
+                capturedDistanceFinalSnapshotReason =
+                    when {
+                        snapshotValue != null && snapshotValue.isFinite() && snapshotValue > 0f -> "live_snapshot"
+                        lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f -> "last_display_fallback"
+                        else -> "zero_default"
                     }
                 endLiveSnapshotMeters =
                     snapshotValue
@@ -2146,9 +2415,17 @@ class V31StateMachine(
                 resetLiveStabilityBuf()
                 // Plane consistency diagnostics: compare CUP plane normal vs saved BALL ground plane normal.
                 ballCupPlaneAngleDeg = null
+                cupPlaneNormal = null
+                cupPlanePointFix = null
+                ballCupSamePlane = null
+                cupPlaneType = null
+                cupTrackableType = hit.trackable?.javaClass?.simpleName ?: "Unknown"
                 val gp = groundPlaneModel
                 val cupPlane = hit.trackable as? Plane
-                if (gp != null && cupPlane != null) {
+                if (cupPlane != null) {
+                    cupPlaneType = cupPlane.type.name
+                    ballCupSamePlane = (ballPlaneAtFix != null && cupPlane === ballPlaneAtFix)
+                    cupPlanePointFix = floatArrayOf(hit.hitPose.tx(), hit.hitPose.ty(), hit.hitPose.tz())
                     val center = cupPlane.centerPose
                     val axis = FloatArray(3)
                     center.getTransformedAxis(1, 1.0f, axis, 0)
@@ -2156,14 +2433,23 @@ class V31StateMachine(
                     val cnx = axis[0] / nLen
                     val cny = axis[1] / nLen
                     val cnz = axis[2] / nLen
-                    val dot = (gp.normal.x * cnx + gp.normal.y * cny + gp.normal.z * cnz).coerceIn(-1f, 1f)
-                    val angleRad = kotlin.math.acos(dot)
-                    val angleDeg = (angleRad * 57.29578f)
-                    ballCupPlaneAngleDeg = angleDeg
-                    if (angleDeg >= 10f) {
-                        Log.w("V31StateMachine", "PLANE_DRIFT_WARN angleDeg=${"%.1f".format(angleDeg)} ballNy=${"%.3f".format(gp.normal.y)} cupNy=${"%.3f".format(cny)}")
+                    cupPlaneNormal = PoseStatsMad.Vec3(cnx, cny, cnz)
+                    if (gp != null) {
+                        val dot = (gp.normal.x * cnx + gp.normal.y * cny + gp.normal.z * cnz).coerceIn(-1f, 1f)
+                        val angleRad = kotlin.math.acos(dot)
+                        val angleDeg = (angleRad * 57.29578f)
+                        ballCupPlaneAngleDeg = angleDeg
+                        if (angleDeg >= 10f) {
+                            Log.w("V31StateMachine", "PLANE_DRIFT_WARN angleDeg=${"%.1f".format(angleDeg)} ballNy=${"%.3f".format(gp.normal.y)} cupNy=${"%.3f".format(cny)}")
+                        }
                     }
+                } else {
+                    ballCupSamePlane = null
+                    cupPlaneType = null
+                    cupTrackableType = null
                 }
+                val deltaYLog = if (startAnchor != null && endAnchor != null) endAnchor!!.pose.ty() - startAnchor!!.pose.ty() else Float.NaN
+                Log.d("SLOPE_PHASE1", "CUP_FIX slopeInput=PLANE trackableType=$cupTrackableType planeType=${cupPlaneType ?: "null"} samePlane=$ballCupSamePlane deltaYRaw_m=${if (deltaYLog.isFinite()) "%.4f".format(deltaYLog) else "null"} planeDriftDeg=${ballCupPlaneAngleDeg?.let { "%.1f".format(it) } ?: "null"}")
                 // Start post-fix hold stability measurement for ~1s.
                 cupHoldStartNs = nowNs
                 cupHoldBuf.clear()
@@ -2171,7 +2457,10 @@ class V31StateMachine(
                 cupHoldSigmaMeters = null
                 cupHoldDurationMs = null
             }
-            else -> anchor.detach()
+            else -> {
+                val orphan = hit.createAnchor()
+                orphan.detach()
+            }
         }
     }
 
@@ -2185,6 +2474,10 @@ class V31StateMachine(
         completeFirstMeasurementIfNeeded()
         startAnchor?.detach(); startAnchor = null
         endAnchor?.detach(); endAnchor = null
+        startAnchorCreatedAtMs = null
+        endAnchorCreatedAtMs = null
+        ballAnchorReplacedPrevious = false
+        cupAnchorReplacedPrevious = false
         buf.clear()
         lastAimSample = null
         startRequestPending = false
@@ -2236,6 +2529,48 @@ class V31StateMachine(
         ballGroundPlaneExtentX = null
         ballGroundPlaneExtentZ = null
         ballCupPlaneAngleDeg = null
+        cupPlaneNormal = null
+        cupPlanePointFix = null
+        ballPlaneAtFix = null
+        ballCupSamePlane = null
+        cupPlaneType = null
+        ballTrackableType = null
+        cupTrackableType = null
+        slopePhase1ResultLogged = false
+        slopeSharedP3Logged = false
+        slopeInputProjectionLogged = false
+        lastSharedP3NormalWorld = null
+        experimentalBallSlopeSamples = null
+        experimentalCupSlopeSamples = null
+        capturedDistanceLockLiveSource = null
+        capturedDistanceLockLiveRawM = null
+        capturedDistanceLockLiveSigmaM = null
+        capturedDistanceLockLiveRangeM = null
+        capturedDistanceLockLiveStable = null
+        capturedDistanceFinalFallbackUsed = false
+        capturedDistanceFinalSnapshotReason = null
+        capturedFinalDistanceLivePlaneMeters = null
+        capturedFinalDistanceSourceBeforeGuard = null
+        capturedFinalDistanceSourceAfterGuard = null
+        capturedFinalDistanceGuardTriggered = false
+        capturedFinalDistanceGuardReasons = null
+        capturedFinalDistanceAnchorInvalidReason = null
+        capturedPlaneVsAnchorDeltaM = null
+        capturedPlaneVsAnchorDeltaRatio = null
+        capturedCupEndAnchorCommitGateDeltaM = null
+        capturedCupEndAnchorGateStrictFar = null
+        capturedCupEndAnchorGateThresholdM = null
+        capturedCupEndAnchorGateBypassedMaxRetries = null
+        capturedCupLiveWorldFrameTimestampNs = null
+        lastLiveCupWorldForDistance = null
+        lastLiveCupWorldFrameTimestampNs = null
+        cupEndAnchorGateRetryCount = 0
+        capturedBallLiveHitWorldAtFinish = null
+        capturedCupLiveHitWorldAtFinish = null
+        capturedCupAnchorHitWorldBeforeSnap = null
+        capturedCupAnchorPoseWorldAfterSnap = null
+        capturedCupAnchorCommitTrackableType = null
+        capturedCupAnchorCommitTrackableId = null
         lastMultiRayGridHalfSpanPx = null
         lastMultiRayStepPx = null
         lastValidSampleCount = null
@@ -2365,6 +2700,82 @@ class V31StateMachine(
         return sqrt(dx * dx + dy * dy + dz * dz)
     }
 
+    /** JSON/로그: [tx,ty,tz,qw,qx,qy,qz] */
+    private fun poseToFloatArray7(p: Pose): FloatArray {
+        val q = FloatArray(4)
+        p.getRotationQuaternion(q, 0)
+        return floatArrayOf(p.tx(), p.ty(), p.tz(), q[0], q[1], q[2], q[3])
+    }
+
+    private fun world3FromPose(p: Pose): FloatArray = floatArrayOf(p.tx(), p.ty(), p.tz())
+
+    /** 멀티레이 대표 히트: LIVE 컵 월드가 있으면 [V31HitSampler]에서 XZ 정렬 선택 */
+    private fun cupLiveAlignForMultiRaySample(): FloatArray? =
+        lastLiveCupWorldForDistance?.copyOf()
+
+    /**
+     * END_LOCK 직전 게이트: 커밋 후보 vs [lastLiveCupWorldForDistance] XZ 델타가 크면 한 프레임 커밋 연기.
+     * LIVE 좌표가 없으면 게이트 없음. [CUP_END_ANCHOR_GATE_MAX_RETRIES] 초과 시 한 번 우회.
+     */
+    private fun shouldBlockCupEndAnchorCommit(
+        stabilizingHit: HitResult,
+        sample: V31HitSampler.Sample
+    ): Boolean {
+        val live = lastLiveCupWorldForDistance ?: run {
+            cupEndAnchorGateRetryCount = 0
+            return false
+        }
+        val cand = world3FromPose(stabilizingHit.hitPose)
+        val gateDeltaM = CupEndAnchorCommitPolicy.xzDistanceMeters(cand, live)
+        val strictFar = CupEndAnchorCommitPolicy.strictFarMode(
+            sample.gridProjectedCupPx,
+            null,
+            sample.validHits
+        )
+        if (!CupEndAnchorCommitPolicy.vetoShouldBlock(gateDeltaM, strictFar)) {
+            cupEndAnchorGateRetryCount = 0
+            cupEndAnchorGateBypassedMaxRetriesPending = false
+            return false
+        }
+        if (cupEndAnchorGateRetryCount < CUP_END_ANCHOR_GATE_MAX_RETRIES) {
+            cupEndAnchorGateRetryCount++
+            val lf = lastLiveCupWorldFrameTimestampNs
+            Log.d(
+                "CUP_END_ANCHOR_ROOT",
+                "gate=veto gateDeltaM_m=${"%.3f".format(gateDeltaM)} thr_m=${"%.3f".format(CupEndAnchorCommitPolicy.thresholdM(strictFar))} " +
+                    "strictFar=$strictFar retry=$cupEndAnchorGateRetryCount/$CUP_END_ANCHOR_GATE_MAX_RETRIES " +
+                    "liveFrameNs=${lf?.toString() ?: "null"} " +
+                    "candidateXZ=(${cand[0]},${cand[2]}) liveXZ=(${live[0]},${live[2]})"
+            )
+            return true
+        }
+        Log.d(
+            "CUP_END_ANCHOR_ROOT",
+            "gate=bypass_max_retries gateDeltaM_m=${"%.3f".format(gateDeltaM)} strictFar=$strictFar " +
+                "liveFrameNs=${lastLiveCupWorldFrameTimestampNs?.toString() ?: "null"}"
+        )
+        cupEndAnchorGateRetryCount = 0
+        cupEndAnchorGateBypassedMaxRetriesPending = true
+        return false
+    }
+
+    private fun anchorHorizontalDistanceMeters(): Float? {
+        val a = startAnchor?.pose ?: return null
+        val b = endAnchor?.pose ?: return null
+        val dx = b.tx() - a.tx()
+        val dz = b.tz() - a.tz()
+        return sqrt(dx * dx + dz * dz)
+    }
+
+    private fun anchor3dDistanceMeters(): Float? {
+        val a = startAnchor?.pose ?: return null
+        val b = endAnchor?.pose ?: return null
+        val dx = b.tx() - a.tx()
+        val dy = b.ty() - a.ty()
+        val dz = b.tz() - a.tz()
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
     private fun distanceBetweenAnchorsMeters(): Float {
         val a = startAnchor?.pose ?: return 0f
         val b = endAnchor?.pose ?: return 0f
@@ -2375,6 +2786,22 @@ class V31StateMachine(
             AxisMode.XYZ -> sqrt(dx * dx + dy * dy + dz * dz)
             AxisMode.XZ -> sqrt(dx * dx + dz * dz)
         }
+    }
+
+    /** slope 파이프라인 공통: raw anchor pose → support surface / surrounding green 투영 */
+    private fun computeSlopeInputProjectionForAnchors(): SlopeInputProjection.Result {
+        val a = startAnchor!!.pose
+        val b = endAnchor!!.pose
+        val rawBall = floatArrayOf(a.tx(), a.ty(), a.tz())
+        val rawCup = floatArrayOf(b.tx(), b.ty(), b.tz())
+        val gpLike = groundPlaneModel?.let {
+            SlopeInputProjection.GroundPlaneModelLike(
+                floatArrayOf(it.pointOnPlane.x, it.pointOnPlane.y, it.pointOnPlane.z),
+                floatArrayOf(it.normal.x, it.normal.y, it.normal.z)
+            )
+        }
+        val cupN = cupPlaneNormal?.let { floatArrayOf(it.x, it.y, it.z) }
+        return SlopeInputProjection.compute(rawBall, rawCup, gpLike, cupPlanePointFix, cupN)
     }
 
     private fun buildUi(
@@ -2449,6 +2876,128 @@ class V31StateMachine(
             } else {
                 null
             }
+
+        val slopeProjected: SlopeInputProjection.Result? =
+            if ((state == State.END_LOCKED || state == State.RESULT) &&
+                startAnchor != null && endAnchor != null) {
+                computeSlopeInputProjectionForAnchors()
+            } else null
+
+        if (slopeProjected != null && debugLoggingEnabled && !slopeInputProjectionLogged) {
+            slopeInputProjectionLogged = true
+            val p = slopeProjected
+            Log.d(
+                "SLOPE_INPUT",
+                "rawBall_m=(${p.rawBall[0]},${p.rawBall[1]},${p.rawBall[2]}) slopeBall_m=(${p.slopeBall[0]},${p.slopeBall[1]},${p.slopeBall[2]}) " +
+                    "rawCup_m=(${p.rawCup[0]},${p.rawCup[1]},${p.rawCup[2]}) slopeCup_m=(${p.slopeCup[0]},${p.slopeCup[1]},${p.slopeCup[2]}) " +
+                    "ballSrc=${p.ballProjectionSource} cupSrc=${p.cupProjectionSource} cupDepressionSuspected=${p.cupDepressionSuspected}"
+            )
+        }
+
+        val slopeDebugInfo: SlopeDebugInfo? =
+            if ((state == State.END_LOCKED || state == State.RESULT) &&
+                startAnchor != null && endAnchor != null) {
+                val a = startAnchor!!.pose
+                val b = endAnchor!!.pose
+                val ballPos = slopeProjected?.slopeBall ?: floatArrayOf(a.tx(), a.ty(), a.tz())
+                val cupPos = slopeProjected?.slopeCup ?: floatArrayOf(b.tx(), b.ty(), b.tz())
+                val ballNorm = groundPlaneModel?.normal?.let { floatArrayOf(it.x, it.y, it.z) }
+                val cupNorm = cupPlaneNormal?.let { floatArrayOf(it.x, it.y, it.z) }
+                val sd = SlopeComputer.compute(
+                    ballPos = ballPos,
+                    cupPos = cupPos,
+                    ballNormalRaw = ballNorm,
+                    cupNormalRaw = cupNorm,
+                    isXyzMode = axisMode == AxisMode.XYZ,
+                    trackingGood = tracking == TrackingState.TRACKING
+                )
+                if (!slopePhase1ResultLogged) {
+                    slopePhase1ResultLogged = true
+                    val deltaYVal = b.ty() - a.ty()
+                    val deltaYProj = slopeProjected?.let { it.slopeCup[1] - it.slopeBall[1] }
+                    Log.d(
+                        "SLOPE_PHASE1",
+                        "SLOPE_RESULT slopeInput=PLANE forwardPct=${sd.forwardPct?.let { "%.2f".format(it) } ?: "null"} lateralPct=${sd.lateralPct?.let { "%.2f".format(it) } ?: "null"} blocked=${sd.blockedReason ?: "none"} " +
+                            "deltaYRaw_m=${"%.4f".format(deltaYVal)} deltaYProjected_m=${if (deltaYProj != null) "%.4f".format(deltaYProj) else "null"} " +
+                            "ballNy=${ballNorm?.get(1)?.let { "%.3f".format(it) } ?: "null"} cupNy=${cupNorm?.get(1)?.let { "%.3f".format(it) } ?: "null"}"
+                    )
+                }
+                sd
+            } else {
+                null
+            }
+
+        // Slope Input 2.0: Experimental (LocalSurfaceFit) 경로
+        // v1: BALL_FIX/CUP_FIX 시점에 저장된 샘플로 계산. RESULT 시점 재샘플링 금지.
+        val slopeExperimentalResult: SlopeInputResult? =
+            if ((state == State.END_LOCKED || state == State.RESULT) &&
+                startAnchor != null && endAnchor != null &&
+                axisMode == AxisMode.XYZ && tracking == TrackingState.TRACKING) {
+                val a = startAnchor!!.pose
+                val b = endAnchor!!.pose
+                val ballPos = slopeProjected?.slopeBall ?: floatArrayOf(a.tx(), a.ty(), a.tz())
+                val cupPos = slopeProjected?.slopeCup ?: floatArrayOf(b.tx(), b.ty(), b.tz())
+                val ballNorm = groundPlaneModel?.normal?.let { floatArrayOf(it.x, it.y, it.z) }
+                val cupNorm = cupPlaneNormal?.let { floatArrayOf(it.x, it.y, it.z) }
+                runCatching {
+                    localSurfaceFitProvider.computeFromStoredSamples(
+                        ballSamples = experimentalBallSlopeSamples,
+                        cupSamples = experimentalCupSlopeSamples,
+                        ballPos = ballPos,
+                        cupPos = cupPos,
+                        ballNormalFromPlane = ballNorm,
+                        cupNormalFromPlane = cupNorm,
+                        phase1ForwardPct = slopeDebugInfo?.forwardPct,
+                        phase1LateralPct = slopeDebugInfo?.lateralPct,
+                        distanceFromCameraCupM = sample?.bestHit?.distance,
+                        multiRayProjectedCupPx = lastMultiRayProjectedCupPx,
+                        testSessionId = slopeTestSessionId,
+                        repeatIndex = slopeRepeatIndex,
+                        targetScenario = slopeTargetScenario
+                    )
+                }.getOrElse { null }
+            } else {
+                null
+            }
+
+        // P3: all/trimmed/corridor 후보 중 1개 선택 + computeSharedOnly — experimental·phase1과 병렬, 덮어쓰기 없음.
+        val sharedP3Outcome: SharedP3PlaneSelection.Outcome? =
+            if ((state == State.END_LOCKED || state == State.RESULT) &&
+                startAnchor != null && endAnchor != null &&
+                axisMode == AxisMode.XYZ && tracking == TrackingState.TRACKING) {
+                val ballPts = experimentalBallSlopeSamples?.points ?: emptyList()
+                val cupPts = experimentalCupSlopeSamples?.points ?: emptyList()
+                val a = startAnchor!!.pose
+                val b = endAnchor!!.pose
+                val ballPos = slopeProjected?.slopeBall ?: floatArrayOf(a.tx(), a.ty(), a.tz())
+                val cupPos = slopeProjected?.slopeCup ?: floatArrayOf(b.tx(), b.ty(), b.tz())
+                val out = SharedP3PlaneSelection.selectBest(
+                    ballPoints = ballPts,
+                    cupPoints = cupPts,
+                    ballPos = ballPos,
+                    cupPos = cupPos,
+                    previousNormal = lastSharedP3NormalWorld
+                )
+                val sd = out.slope
+                if (sd != null && sd.quality == "valid" && sd.forwardPct != null && sd.refNormal != null) {
+                    val rn = sd.refNormal
+                    val len = sqrt(rn[0] * rn[0] + rn[1] * rn[1] + rn[2] * rn[2])
+                    if (len > 1e-5f) {
+                        lastSharedP3NormalWorld = floatArrayOf(rn[0] / len, rn[1] / len, rn[2] / len)
+                    }
+                }
+                if (!slopeSharedP3Logged) {
+                    slopeSharedP3Logged = true
+                    out.logPayload.emitLogcatLines()
+                }
+                out
+            } else {
+                null
+            }
+        val experimentalSharedSlope = sharedP3Outcome?.slope
+        val sharedPlaneFitResidualM = sharedP3Outcome?.residualM
+        val sharedPlaneSampleCount = sharedP3Outcome?.sampleCount
+        val sharedP3Log = sharedP3Outcome?.logPayload
 
         // OK/NG quality mapping (UI-only)
         val quality: ViewFinderView.QualityState =
@@ -2648,7 +3197,7 @@ class V31StateMachine(
         val holdSigmaCm = cupHoldSigmaMeters?.let { it * 100f }
         val holdMaxCm = if (cupHoldStartNs > 0L) (cupHoldMaxDevMeters * 100f) else null
 
-        return UiModel(
+        val uiModel = UiModel(
             engineState = state,
             distanceMeters = distanceMeters,
             distanceTextColor = distanceColor,
@@ -2684,6 +3233,8 @@ class V31StateMachine(
             ballGroundPlaneExtentX = ballGroundPlaneExtentX,
             ballGroundPlaneExtentZ = ballGroundPlaneExtentZ,
             ballCupPlaneAngleDeg = ballCupPlaneAngleDeg,
+            ballCupSamePlane = ballCupSamePlane,
+            cupPlaneType = cupPlaneType,
             liveRawMeters = liveRawMeters,
             centerHitValid = centerHitValid,
             multiRayGridHalfSpanPx = lastMultiRayGridHalfSpanPx,
@@ -2724,7 +3275,148 @@ class V31StateMachine(
                     if (elapsedMs < BALL_WARMUP_INITIAL_RELAX_MS) BALL_WARMUP_REQUIRED_HITS_INITIAL else BALL_WARMUP_REQUIRED_HITS
                 } else BALL_WARMUP_REQUIRED_HITS
             } else null,
-            cupBlockedReason = cupBlockedReason
+            cupBlockedReason = cupBlockedReason,
+            slopeDebugInfo = slopeDebugInfo,
+            trackingState = tracking.name,
+            anchorDistanceMeters = if (startAnchor != null && endAnchor != null) distanceBetweenAnchorsMeters() else null,
+            slopeInputSource = if (state == State.END_LOCKED || state == State.RESULT) "PLANE_BASED" else null,
+            ballTrackableType = ballTrackableType,
+            cupTrackableType = cupTrackableType,
+            deltaYRaw = if (startAnchor != null && endAnchor != null) {
+                val a = startAnchor!!.pose
+                val b = endAnchor!!.pose
+                b.ty() - a.ty()
+            } else null,
+            ballNormalSource = if (groundPlaneModel != null) "PLANE_CENTER_POSE" else null,
+            cupNormalSource = if (cupPlaneNormal != null) "PLANE_CENTER_POSE" else null,
+            slopeExperimentalResult = slopeExperimentalResult,
+            experimentalSharedSlope = experimentalSharedSlope,
+            sharedPlaneFitResidualM = sharedPlaneFitResidualM,
+            sharedPlaneSampleCount = sharedPlaneSampleCount,
+            sharedP3Log = sharedP3Log,
+            distanceLockLiveSource = if (state == State.RESULT) capturedDistanceLockLiveSource else null,
+            distanceLockLiveRawM = if (state == State.RESULT) capturedDistanceLockLiveRawM else null,
+            distanceLockLiveSigmaM = if (state == State.RESULT) capturedDistanceLockLiveSigmaM else null,
+            distanceLockLiveRangeM = if (state == State.RESULT) capturedDistanceLockLiveRangeM else null,
+            distanceLockLiveStable = if (state == State.RESULT) capturedDistanceLockLiveStable else null,
+            distanceFinalFallbackUsed = if (state == State.RESULT) capturedDistanceFinalFallbackUsed else false,
+            distanceFinalSnapshotReason = if (state == State.RESULT) capturedDistanceFinalSnapshotReason else null,
+            finalDistanceLivePlaneMeters = if (state == State.RESULT) capturedFinalDistanceLivePlaneMeters else null,
+            finalDistanceSourceBeforeGuard = if (state == State.RESULT) capturedFinalDistanceSourceBeforeGuard else null,
+            finalDistanceSourceAfterGuard = if (state == State.RESULT) capturedFinalDistanceSourceAfterGuard else null,
+            finalDistanceGuardTriggered = if (state == State.RESULT) capturedFinalDistanceGuardTriggered else false,
+            finalDistanceGuardReasons = if (state == State.RESULT) capturedFinalDistanceGuardReasons else null,
+            finalDistanceAnchorInvalidReason = if (state == State.RESULT) capturedFinalDistanceAnchorInvalidReason else null,
+            planeIntersectionVsAnchorDeltaM = if (state == State.RESULT) capturedPlaneVsAnchorDeltaM else null,
+            planeIntersectionVsAnchorDeltaRatio = if (state == State.RESULT) capturedPlaneVsAnchorDeltaRatio else null,
+            ballAnchorWorld = startAnchor?.pose?.let { world3FromPose(it) },
+            cupAnchorWorld = endAnchor?.pose?.let { world3FromPose(it) },
+            ballAnchorSourceState = if (startAnchor != null) "STABILIZING_START_LOCK" else null,
+            cupAnchorSourceState = if (endAnchor != null) "STABILIZING_END_LOCK" else null,
+            anchorHorizontalM = anchorHorizontalDistanceMeters(),
+            anchor3dM = anchor3dDistanceMeters(),
+            startAnchorCreatedAtMs = startAnchorCreatedAtMs,
+            endAnchorCreatedAtMs = endAnchorCreatedAtMs,
+            anchorCreatedAtMs = endAnchorCreatedAtMs,
+            anchorReused = ballAnchorReplacedPrevious || cupAnchorReplacedPrevious,
+            startAnchorPose = startAnchor?.pose?.let { poseToFloatArray7(it) },
+            endAnchorPose = endAnchor?.pose?.let { poseToFloatArray7(it) },
+            ballLiveHitWorldAtFinish =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedBallLiveHitWorldAtFinish else null,
+            cupLiveHitWorldAtFinish =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupLiveHitWorldAtFinish else null,
+            cupAnchorHitWorldBeforeSnap =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupAnchorHitWorldBeforeSnap else null,
+            cupAnchorPoseWorldAfterSnap =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupAnchorPoseWorldAfterSnap else null,
+            cupAnchorCommitTrackableType =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupAnchorCommitTrackableType else null,
+            cupAnchorCommitTrackableId =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupAnchorCommitTrackableId else null,
+            cupCandidateVsLiveHitXZDeltaMAtCommit =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorCommitGateDeltaM else null,
+            cupEndAnchorCommitStrictFar =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorGateStrictFar else null,
+            cupEndAnchorCommitGateThresholdM =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorGateThresholdM else null,
+            cupEndAnchorGateBypassedMaxRetries =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorGateBypassedMaxRetries else null,
+            cupEndAnchorCommitBypassSession =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorGateBypassedMaxRetries else null,
+            cupLiveWorldFrameTimestampNs =
+                if (state == State.END_LOCKED || state == State.RESULT) capturedCupLiveWorldFrameTimestampNs else null,
+            slopeProjectionSnapshot = slopeProjected,
+            deltaYProjected = slopeProjected?.let { it.slopeCup[1] - it.slopeBall[1] }
+        )
+        if (state == State.RESULT && lastEngineStateForSlopeFieldLog != State.RESULT) {
+            SlopeFieldTestLog.emitOnResult(
+                ui = uiModel,
+                ballAnchored = startAnchor != null,
+                cupAnchored = endAnchor != null
+            )
+        }
+        lastEngineStateForSlopeFieldLog = state
+        return uiModel
+    }
+
+    /**
+     * LIVE/plane 후보 후 [FinalDistanceGuard] 적용. anchor 유효 + 위험 시 anchor fallback.
+     */
+    private fun commitFinalDistanceWithGuard() {
+        val anchorM = distanceBetweenAnchorsMeters()
+        val livePlaneCandidate =
+            when {
+                endLiveSnapshotMeters.isFinite() && endLiveSnapshotMeters > 0f -> endLiveSnapshotMeters
+                lastDisplayDistanceMeters.isFinite() && lastDisplayDistanceMeters > 0f -> lastDisplayDistanceMeters
+                else -> 0f
+            }
+        fun guardContextLine(phase: String, selFinal: Float?, selSource: String?, reasons: String?): String =
+            "DISTANCE_GUARD_COMMIT phase=$phase liveDistanceM=${"%.6f".format(livePlaneCandidate)} " +
+                "anchorDistanceM=${"%.6f".format(anchorM)} " +
+                "selectedFinalDistanceM=${if (selFinal != null && selFinal.isFinite()) "%.6f".format(selFinal) else "pending"} " +
+                "selectedSource=${selSource ?: "pending"} " +
+                "guardReasons=${reasons ?: "pending"} " +
+                "projectedCupPx=${lastMultiRayProjectedCupPx?.let { "%.1f".format(it) } ?: "null"} " +
+                "validSampleCount=${lastValidSampleCount ?: "null"} " +
+                "multiRayPlan=${lastMultiRayPlan ?: "null"} " +
+                "trackingState=$lastTickTrackingStateName"
+        Log.d("DISTANCE_GUARD_COMMIT", guardContextLine("BEFORE", null, null, null))
+        val res =
+            FinalDistanceGuard.apply(
+                endLiveSnapshotMeters = endLiveSnapshotMeters,
+                lastDisplayDistanceMeters = lastDisplayDistanceMeters,
+                anchorMeters = anchorM,
+                anchorsBothPresent = startAnchor != null && endAnchor != null,
+                projectedCupPx = lastMultiRayProjectedCupPx,
+                liveStable = capturedDistanceLockLiveStable,
+                finalFallbackUsed = capturedDistanceFinalFallbackUsed,
+                ballCupPlaneAngleDeg = ballCupPlaneAngleDeg
+            )
+        finalDistanceMeters = res.finalMeters
+        capturedFinalDistanceLivePlaneMeters = res.livePlaneMeters
+        capturedFinalDistanceSourceBeforeGuard = res.livePlaneBeforeSource
+        capturedFinalDistanceSourceAfterGuard = res.sourceAfterGuard
+        capturedFinalDistanceGuardTriggered = res.guardTriggered
+        capturedFinalDistanceGuardReasons = res.reasonsJoined
+        capturedFinalDistanceAnchorInvalidReason = res.anchorInvalidReason
+        capturedPlaneVsAnchorDeltaM = res.deltaM
+        capturedPlaneVsAnchorDeltaRatio = res.deltaRatio
+
+        Log.d(
+            "DISTANCE_GUARD_COMMIT",
+            guardContextLine("AFTER", res.finalMeters, res.sourceAfterGuard, res.reasonsJoined)
+        )
+        Log.d(
+            "DISTANCE_FINAL_GUARD",
+            "anchorDistanceM=${"%.3f".format(anchorM)} livePlaneDistanceM=${"%.3f".format(res.livePlaneMeters)} " +
+                "planeIntersectionVsAnchorDeltaM=${"%.3f".format(res.deltaM)} " +
+                "planeIntersectionVsAnchorDeltaRatio=${"%.4f".format(res.deltaRatio)} " +
+                "projectedCupPx=${lastMultiRayProjectedCupPx?.let { "%.1f".format(it) } ?: "null"} " +
+                "finalDistanceSourceBeforeGuard=${res.livePlaneBeforeSource} finalDistanceSourceAfterGuard=${res.sourceAfterGuard} " +
+                "finalDistanceGuardTriggered=${res.guardTriggered} finalDistanceGuardReasons=${res.reasonsJoined} " +
+                "finalDistanceAnchorInvalidReason=${res.anchorInvalidReason ?: "none"} " +
+                "cfg: maxDeltaM=${FinalDistanceGuardConfig.MAX_PLANE_ANCHOR_DELTA_M} " +
+                "maxRatio=${FinalDistanceGuardConfig.MAX_PLANE_ANCHOR_DELTA_RATIO} minPx=${FinalDistanceGuardConfig.MIN_PROJECTED_CUP_PX}"
         )
     }
 

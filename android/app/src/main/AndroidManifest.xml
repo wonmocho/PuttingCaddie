@@ -57,6 +57,17 @@
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@style/DistanceMeterNativeTheme" />
+        <activity
+            android:name="com.wmcho.puttingcaddie.ResultDataActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/DistanceMeterNativeTheme" />
+        <activity
+            android:name="com.wmcho.puttingcaddie.ProAimingResultActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/DistanceMeterNativeTheme" />
 
         <!-- FileProvider for feedback log email attachments -->
         <provider

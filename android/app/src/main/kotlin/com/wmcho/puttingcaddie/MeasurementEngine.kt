@@ -11,5 +11,8 @@ interface MeasurementEngine {
     fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long): V31StateMachine.UiModel
 
     fun reset()
+
+    /** 필드 테스트 prefs → experimental slope 로그 상관용 (V31만 사용, 나머지 엔진은 무시) */
+    fun setSlopeTestLogContext(sessionId: String?, repeatIndex: Int?, targetScenario: String?) {}
 }
 

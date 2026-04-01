@@ -57,6 +57,14 @@ class ScreenToViewMapper(private val targetView: View) {
         return PointF(pts[0], pts[1])
     }
 
+    /** View-local(px) -> Screen(px). Slope v1: ball/cup world projection 결과를 hitTest 입력 형식으로 변환. */
+    fun viewLocalToScreen(p: PointF): PointF {
+        ensureMatrices()
+        val pts = floatArrayOf(p.x, p.y)
+        localToScreen.mapPoints(pts)
+        return PointF(pts[0], pts[1])
+    }
+
     /**
      * Inverse of render zoom around view center.
      * Render uses: pZoomed = (pBase - c) * z + c

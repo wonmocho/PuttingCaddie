@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local bundle / signing extract (do not commit)
+BUNDLE-METADATA/
+META-INF/
+BundleConfig.pb
+launch_version.zip
+launch_version_extracted/
+
+# Local release artifact (no extension)
+PuttingCaddy_*

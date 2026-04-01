@@ -108,6 +108,9 @@ dependencies {
 
     // Google Play In-App Review (used only on 2nd survey positive path)
     implementation("com.google.android.play:review:2.0.1")
+    // Google Play Billing (Pro 구독. Phase 2)
+    implementation("com.android.billingclient:billing:6.1.0")
+    implementation("com.android.billingclient:billing-ktx:6.1.0")
 }
 
 

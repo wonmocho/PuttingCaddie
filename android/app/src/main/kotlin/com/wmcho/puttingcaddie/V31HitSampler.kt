@@ -1,6 +1,7 @@
 package com.wmcho.puttingcaddie
 
 import android.graphics.PointF
+import android.opengl.Matrix
 import android.util.Log
 import android.graphics.RectF
 import com.google.ar.core.Coordinates2d
@@ -174,6 +175,73 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
     }
 
     /**
+     * Raw hitTest: returns closest hit (Plane/Point/DepthPoint) at screen point.
+     * Slope Input 2.0 LocalSurfaceFit용. 거리 엔진에는 영향 없음.
+     */
+    fun hitTestClosestAtScreenPoint(frame: Frame, screenX: Float, screenY: Float): HitResult? {
+        val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
+        val results = frame.hitTest(pAdj.x, pAdj.y) ?: return null
+        return results.minByOrNull { it.distance }
+    }
+
+    /**
+     * Slope v1: hit 선택 시 타입 우선순위 적용. DepthPoint > Point > Plane.
+     * 같은 타입 내에서는 가장 가까운 hit 선택.
+     */
+    fun hitTestWithTypePriority(frame: Frame, screenX: Float, screenY: Float): HitResult? {
+        val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
+        val results = frame.hitTest(pAdj.x, pAdj.y) ?: return null
+        return selectByTypePriority(results)
+    }
+
+    /**
+     * 월드 좌표를 view-local pixel 좌표로 투영. 카메라 뒤/뷰 밖이면 null.
+     * Slope v1: ball/cup anchor 위치 → hitTest용 screen center 계산.
+     */
+    fun projectWorldToViewPoint(frame: Frame, worldX: Float, worldY: Float, worldZ: Float): PointF? {
+        val w = mapper.viewWidthPx().toFloat()
+        val h = mapper.viewHeightPx().toFloat()
+        if (w <= 1f || h <= 1f) return null
+        val viewMat = FloatArray(16)
+        val projMat = FloatArray(16)
+        frame.camera.getViewMatrix(viewMat, 0)
+        frame.camera.getProjectionMatrix(projMat, 0, 0.1f, 100f)
+        val vpMat = FloatArray(16)
+        Matrix.multiplyMM(vpMat, 0, projMat, 0, viewMat, 0)
+        val pt = floatArrayOf(worldX, worldY, worldZ, 1f)
+        val out = FloatArray(4)
+        Matrix.multiplyMV(out, 0, vpMat, 0, pt, 0)
+        if (kotlin.math.abs(out[3]) < 1e-6f) return null
+        val ndcX = out[0] / out[3]
+        val ndcY = out[1] / out[3]
+        if (ndcX < -1f || ndcX > 1f || ndcY < -1f || ndcY > 1f) return null
+        val vx = (ndcX + 1f) / 2f * w
+        val vy = (1f - ndcY) / 2f * h
+        return PointF(vx, vy)
+    }
+
+    /**
+     * 월드 좌표를 screen(px) 좌표로 투영. Slope v1: hitTestClosestAtScreenPoint 입력용.
+     */
+    fun projectWorldToScreenPoint(frame: Frame, worldX: Float, worldY: Float, worldZ: Float): PointF? {
+        val viewPt = projectWorldToViewPoint(frame, worldX, worldY, worldZ) ?: return null
+        return mapper.viewLocalToScreen(viewPt)
+    }
+
+    private fun selectByTypePriority(results: List<HitResult>): HitResult? {
+        if (results.isEmpty()) return null
+        val valid = results.filter { it.trackable !is InstantPlacementPoint }
+        if (valid.isEmpty()) return null
+        val depth = valid.filter { isDepthTrackable(it.trackable) }
+        val point = valid.filter { it.trackable is Point }
+        val plane = valid.filter { it.trackable is Plane }
+        val bestDepth = depth.minByOrNull { it.distance }
+        val bestPoint = point.minByOrNull { it.distance }
+        val bestPlane = plane.minByOrNull { it.distance }
+        return bestDepth ?: bestPoint ?: bestPlane
+    }
+
+    /**
      * Single-ray plane hit at a screen coordinate (GREENIQ LIVE "laser" mode).
      *
      * Representative hit selection rules:
@@ -227,7 +295,9 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         yBelowCameraMeters: Float = 0.1f,
         preferUpwardFacing: Boolean = true,
         requireUpwardFacing: Boolean = false,
-        forceFar5x5: Boolean = false
+        forceFar5x5: Boolean = false,
+        /** null이면 median에 가장 가까운 히트; 지정 시 XZ로 [liveWorldAlignForHitPick]에 가장 가까운 plane 히트 선택 */
+        liveWorldAlignForHitPick: FloatArray? = null
     ): Sample {
         val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
         val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
@@ -409,19 +479,38 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val my = median(ys)
         val mz = median(zs)
 
-        // Choose the real hit whose pose is closest to the median point (for anchor creation).
-        var best: SelectedHit? = null
-        var bestD2 = Float.POSITIVE_INFINITY
-        for (s in selected) {
-            val dx = s.pose.tx() - mx
-            val dy = s.pose.ty() - my
-            val dz = s.pose.tz() - mz
-            val d2 = dx * dx + dy * dy + dz * dz
-            if (d2 < bestD2) {
-                bestD2 = d2
-                best = s
+        // Representative hit: LIVE 정렬 ref가 있으면 XZ로 가장 가까운 히트(Trackable·createAnchor 경로 유지), 없으면 median 근접.
+        val best: SelectedHit? =
+            if (liveWorldAlignForHitPick != null && liveWorldAlignForHitPick.size >= 3 && selected.isNotEmpty()) {
+                val lx = liveWorldAlignForHitPick[0]
+                val lz = liveWorldAlignForHitPick[2]
+                var pick: SelectedHit? = null
+                var bestXZ2 = Float.POSITIVE_INFINITY
+                for (s in selected) {
+                    val dx = s.pose.tx() - lx
+                    val dz = s.pose.tz() - lz
+                    val xz2 = dx * dx + dz * dz
+                    if (xz2 < bestXZ2) {
+                        bestXZ2 = xz2
+                        pick = s
+                    }
+                }
+                pick
+            } else {
+                var pick: SelectedHit? = null
+                var bestD2 = Float.POSITIVE_INFINITY
+                for (s in selected) {
+                    val dx = s.pose.tx() - mx
+                    val dy = s.pose.ty() - my
+                    val dz = s.pose.tz() - mz
+                    val d2 = dx * dx + dy * dy + dz * dz
+                    if (d2 < bestD2) {
+                        bestD2 = d2
+                        pick = s
+                    }
+                }
+                pick
             }
-        }
 
         val avgDist = distances.sum() / distances.size.toFloat()
         val maxDist = distances.maxOrNull()

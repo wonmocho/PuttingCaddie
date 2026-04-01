@@ -2,6 +2,7 @@ package com.wmcho.puttingcaddie
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.res.Configuration
 import android.content.pm.PackageManager
@@ -51,6 +52,8 @@ import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.android.play.core.review.ReviewManagerFactory
+import com.wmcho.puttingcaddie.slope.ExperimentalSlopeKpi
+import com.wmcho.puttingcaddie.slope.experimentalSlopeDiagnosticsToJson
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
@@ -93,6 +96,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         private const val CUP_YOLO_ENABLED = false
         // Zoom UI: false = 비활성화 (엔진 준비 전까지 숨김, 코드 유지)
         private const val ZOOM_UI_ENABLED = false
+        // Pro 과금 UI: false = 비노출 (경사 신뢰성 확보 후 true로 전환)
+        private const val SHOW_PRO_PAYWALL = false
         // YOLO cup assist tuning (골프장=엄격 검출만 AUTO, 일반환경=수동 위주)
         private const val CUP_YOLO_CONF_THRESHOLD = 0.72f
         private const val CUP_YOLO_IOU_THRESHOLD = 0.45f
@@ -137,6 +142,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private lateinit var btnZoomMinus: com.google.android.material.button.MaterialButton
     private lateinit var imgCheck: ImageView
     private lateinit var btnSettings: ImageButton
+    private lateinit var layoutProCta: View
+    private lateinit var btnResultData: android.widget.Button
 
     // --- v3.1 UI overlay (ViewFinder) ---
     private var viewFinder: ViewFinderView? = null
@@ -226,10 +233,19 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private val KEY_TEST_GROUND_TRUTH_M = "test_ground_truth_m"
     private val KEY_TEST_LIGHT = "test_light_condition" // SUNNY|CLOUDY|SHADE
     private val KEY_TEST_NOTES = "test_notes"
+    /** 필드 테스트 세션 상관 ID (experimentalDiagnostics.testSessionId) */
+    private val KEY_TEST_SESSION_ID = "test_session_id"
+    /** 같은 위치 반복 측정 인덱스 0,1,2… (미설정: -1 저장 → null 전달) */
+    private val KEY_TEST_REPEAT_INDEX = "test_repeat_index"
+    /** 시나리오 라벨 (flat, uphill_lateral 등, optional) */
+    private val KEY_TEST_TARGET_SCENARIO = "test_target_scenario"
 
     // --- Feedback / survey (no server; email only) ---
     private val feedbackEmailTo = "wonmocho62@gmail.com" // v1: fixed; replace later with support@...
     private val recentSessions: ArrayDeque<FeedbackSession> = ArrayDeque()
+
+    /** RESULT 직후 디버그 힌트용 — 매 프레임 feedbackSnapshot 재계산 시 prior 오염 방지 */
+    private var lastDistanceFeedbackSnapshot: DistanceFieldTestLog.DistanceFeedbackSnapshot? = null
 
     private var startStabilizingEnteredAtMs: Long = 0L
     private var endStabilizingEnteredAtMs: Long = 0L
@@ -240,9 +256,16 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
     private val updateHandler = Handler(Looper.getMainLooper())
 
+    // --- Pro entitlement (Phase 1: 기본값만, Phase 2에서 Billing 연동) ---
+    private lateinit var entitlementManager: EntitlementManager
+    private var billingManager: BillingManager? = null
+
     private var trackingUiRunnable: Runnable? = null
     private var showDoneStatus: Boolean = false
     private var lastIsMeasuringFlow: Boolean = false
+    private var lastResultDebugText: String? = null
+    private var lastGraphicBundle: android.os.Bundle? = null
+    @Volatile private var proForceResetOnResume: Boolean = false
 
     // --- Screen adjust (lie-caddy-v1 style; texture-level) ---
     private val KEY_ROTATION = "screen_rotation" // Float [-180..180]
@@ -281,6 +304,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         setContentView(R.layout.activity_distance_measurement)
 
         initUI()
+        entitlementManager = EntitlementManager(prefs(), isDebuggableBuild())
+        billingManager = BillingManager(this, entitlementManager).also { it.startConnection() }
         setupPreviewGLViewBehindUi()
         loadScreenAdjustPrefs()
         applyScreenAdjustToPreviewWhenLaidOut()
@@ -292,6 +317,29 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             initializeARCore()
         } else {
             requestCameraPermission()
+        }
+
+        proForceResetOnResume = intent?.getBooleanExtra(ProAimingResultActivity.EXTRA_FORCE_RESET, false) == true
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(ProAimingResultActivity.EXTRA_FORCE_RESET, false)) {
+            proForceResetOnResume = true
+        }
+    }
+
+    /** 그래픽 결과(Pro) 또는 번들 없을 때 텍스트 분석 화면. 측정data 버튼과 동일. */
+    private fun openGraphicResultScreen() {
+        val bundle = lastGraphicBundle
+        val textData = lastResultDebugText ?: "(측정 결과 없음)"
+        if (bundle != null) {
+            startActivity(ProAimingResultActivity.newIntent(this, bundle, textData))
+        } else {
+            startActivity(Intent(this, ResultDataActivity::class.java).apply {
+                putExtra(ResultDataActivity.EXTRA_RESULT_DATA, textData)
+            })
         }
     }
 
@@ -315,6 +363,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         layoutZoomButtons = findViewById(R.id.layoutZoomButtons)
         btnZoomPlus = findViewById(R.id.btnZoomPlus)
         btnZoomMinus = findViewById(R.id.btnZoomMinus)
+        layoutProCta = findViewById(R.id.layout_pro_cta)
+        btnResultData = findViewById(R.id.btn_result_data)
 
         // Load unit preference early (unit toggle is in menu only).
         unitMode = loadUnitPref()
@@ -334,6 +384,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             cupYoloFreezeUntilNs = System.nanoTime() + CUP_YOLO_FREEZE_AFTER_FINISH_NS
             pendingEngineEvents.add(V31StateMachine.UiEvent.FinishPressed)
         }
+        btnResultData.setOnClickListener { openGraphicResultScreen() }
         layoutResetTouch.setOnClickListener {
             // quick tap feedback: subtle scale-down then restore
             it.animate().cancel()
@@ -597,8 +648,396 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         return sb
     }
 
-    // GREENIQ Distance v1: single mode only (XZ / horizontal).
-    private fun isAxisXzSelected(): Boolean = true
+    /** 내부 테스트용 Slope Debug 텍스트 (요약→상태→원시값→진단→고급) */
+    private fun formatSlopeDebugText(
+        ui: V31StateMachine.UiModel,
+        sd: SlopeDebugInfo?,
+        ballAnchored: Boolean,
+        cupAnchored: Boolean
+    ): String {
+        val modeStr = when {
+            sd?.isXyzMode == true -> "XYZ"
+            ui.horizontalVerticalMeters != null -> "XYZ"  // hv 있으면 XYZ 경로 통과
+            else -> "XZ"
+        }
+        val testModeOn = entitlementManager.current.isTestOverride
+        val slopeVisible = entitlementManager.canShowSlope || isDebuggableBuild()
+
+        val sb = StringBuilder()
+        sb.append("[요약]\n")
+        val distLabel = if (unitMode == UnitMode.YARD) "yd" else "m"
+        val distVal = toUnitValue(ui.distanceMeters)
+        sb.append("거리 ${String.format(Locale.US, "%.2f", distVal)}$distLabel\n")
+        val upLabel = getString(R.string.slope_uphill_downhill)
+        val upVal = sd?.forwardPct?.takeIf { it.isFinite() }
+            ?: (ui.horizontalVerticalMeters?.let { (h, v) -> if (h >= 0.01f) (v / h) * 100f else null })
+        sb.append("$upLabel ${upVal?.let { SlopeComputer.formatForwardSlope(it) } ?: "—"}\n")
+        val latLabel = getString(R.string.slope_left_right)
+        val latVal = sd?.lateralPct?.takeIf { it.isFinite() }
+        sb.append("$latLabel ${latVal?.let { SlopeComputer.formatLateralSlope(it) } ?: "—"}\n")
+        val pdVal = sd?.planeDriftDeg ?: ui.ballCupPlaneAngleDeg
+        sb.append("${getString(R.string.slope_plane_diff)} ${pdVal?.let { "%.1f".format(it) + "°" } ?: "—"}\n\n")
+
+        // [Baseline vs Experimental 비교] — 골프장 로그 판정용. 같은 위치 2~3회 반복 시 한눈에 비교 가능.
+        val exp = ui.slopeExperimentalResult
+        sb.append("[Baseline vs Experimental 비교]\n")
+        sb.append("forwardPct_plane      = ${sd?.forwardPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+        sb.append("forwardPct_experimental= ${exp?.forwardPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+        sb.append("lateralPct_plane      = ${sd?.lateralPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+        sb.append("lateralPct_experimental= ${exp?.lateralPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+        sb.append("rejectReason          = ${exp?.rejectReason ?: "none"}\n")
+        sb.append("ballInputSource       = ${exp?.ballInputSource ?: "—"}\n")
+        sb.append("cupInputSource        = ${exp?.cupInputSource ?: "—"}\n")
+        sb.append("sampleCountBall       = ${exp?.sampleCountBall ?: "—"}\n")
+        sb.append("sampleCountCup        = ${exp?.sampleCountCup ?: "—"}\n")
+        sb.append("experimentalPlaneDriftDeg = ${exp?.experimentalPlaneDriftDeg?.let { "%.1f".format(it) + "°" } ?: "—"}\n")
+        sb.append("driftThresholdDeg     = ${exp?.driftThresholdDeg?.let { "%.1f".format(it) + "°" } ?: "—"}\n")
+        sb.append("ballLocalNormal       = ${exp?.ballNormal?.let { "[${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]" } ?: "—"}\n")
+        sb.append("cupLocalNormal        = ${exp?.cupNormal?.let { "[${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]" } ?: "—"}\n")
+        sb.append("refNormal             = ${exp?.refNormal?.let { "[${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]" } ?: "—"}\n")
+        sb.append("trackingStateAtBallSample = ${exp?.trackingStateAtBallSample ?: "—"}\n")
+        sb.append("trackingStateAtCupSample  = ${exp?.trackingStateAtCupSample ?: "—"}\n")
+        exp?.experimentalDiagnostics?.let { d ->
+            sb.append("\n[Experimental diagnostics]\n")
+            sb.append("testSessionId=${d.testSessionId ?: "—"} repeatIndex=${d.repeatIndex?.toString() ?: "—"} scenario=${d.targetScenario ?: "—"}\n")
+            sb.append("sanityStatus=${d.sanityStatus ?: "—"} rejectReason=${d.sanityRejectReason ?: "—"}\n")
+            sb.append("driftRaw=${d.driftRawDeg?.let { "%.2f°".format(it) } ?: "—"} driftCanon=${d.driftCanonicalDeg?.let { "%.2f°".format(it) } ?: "—"} driftType=${d.driftType ?: "—"}\n")
+            sb.append("flipBall wUp=${d.normalFlipByWorldUpBall} ref=${d.normalFlipByRefBall} | flipCup wUp=${d.normalFlipByWorldUpCup} ref=${d.normalFlipByRefCup} ballAlign=${d.normalFlipByBallAlignCup}\n")
+            sb.append("normalStability=${d.normalStabilityStatus ?: "—"} ballStd=${d.ballNormalStdDeg?.let { "%.2f°".format(it) } ?: "—"} cupStd=${d.cupNormalStdDeg?.let { "%.2f°".format(it) } ?: "—"} jackknifeN=${d.ballNormalCandidateCount ?: "—"}/${d.cupNormalCandidateCount ?: "—"}\n")
+            sb.append("residualType=${d.residualType ?: "—"} cupThresh=${d.cupResidualThresholdApplied?.let { "%.4f".format(it) } ?: "—"} mode=${d.cupResidualThresholdMode ?: "—"}\n")
+            sb.append("spreadCupM=${d.sampleSpreadCupM?.let { "%.4f".format(it) } ?: "—"} distCamCupM=${d.distanceFromCameraCupM?.let { "%.3f".format(it) } ?: "—"} multiRayCupPx=${d.multiRayProjectedCupPx?.let { "%.1f".format(it) } ?: "—"}\n")
+            if (d.rejectTrace.isNotEmpty()) {
+                sb.append("rejectTrace=${d.rejectTrace.joinToString(" > ")}\n")
+            }
+            d.lastRejectStage?.let { sb.append("lastRejectStage=$it\n") }
+            d.preRejectReason?.let { sb.append("preRejectReason=$it\n") }
+        }
+        sb.append("\n")
+
+        sb.append("[거리 소스]\n")
+        sb.append("distance(화면) = ${"%.2f".format(ui.distanceMeters)}m  (finalDistance: LIVE 스냅샷)\n")
+        ui.anchorDistanceMeters?.let {
+            sb.append("anchorDist = ${"%.2f".format(it)}m  (anchor↔anchor)\n")
+            sb.append("→ 거리와 h 차이: distance는 LIVE파이프라인, h는 anchor기반\n")
+        }
+        sb.append("\n[Baseline]\n")
+        sb.append("상하경사(Plane) ${sd?.forwardPct?.let { SlopeComputer.formatForwardSlope(it) } ?: "—"}\n")
+        sb.append("측면경사(Plane) ${sd?.lateralPct?.let { SlopeComputer.formatLateralSlope(it) } ?: "—"}\n")
+        sb.append("source = PLANE_BASED\n")
+
+        sb.append("\n[Experimental]\n")
+        sb.append("상하경사(LocalFit) ${exp?.forwardPct?.let { SlopeComputer.formatForwardSlope(it) } ?: "—"}\n")
+        sb.append("측면경사(LocalFit) ${exp?.lateralPct?.let { SlopeComputer.formatLateralSlope(it) } ?: "—"}\n")
+        sb.append("source = ${exp?.sampleSourceTypes ?: (exp?.sourceId ?: "—")}\n")
+        sb.append("ballInputSource = ${exp?.ballInputSource ?: "—"}\n")
+        sb.append("cupInputSource = ${exp?.cupInputSource ?: "—"}\n")
+        sb.append("sampleCountBall = ${exp?.sampleCountBall ?: "—"}\n")
+        sb.append("sampleCountCup = ${exp?.sampleCountCup ?: "—"}\n")
+        exp?.fitResidualBall?.let { sb.append("fitResidualBall = ${"%.4f".format(it)}m\n") }
+        exp?.fitResidualCup?.let { sb.append("fitResidualCup = ${"%.4f".format(it)}m\n") }
+        sb.append("rejectReason = ${exp?.rejectReason ?: "none"}\n")
+        exp?.ballSampleTimestampMs?.let { sb.append("ballSampleTimestampMs = $it\n") }
+        exp?.cupSampleTimestampMs?.let { sb.append("cupSampleTimestampMs = $it\n") }
+        exp?.ballSampleFrameId?.let { sb.append("ballSampleFrameId = $it\n") }
+        exp?.cupSampleFrameId?.let { sb.append("cupSampleFrameId = $it\n") }
+        // plane_drift_too_large 등 reject 원인 정밀 진단
+        exp?.experimentalPlaneDriftDeg?.let { sb.append("experimentalPlaneDriftDeg = ${"%.1f".format(it)}°\n") }
+        exp?.driftThresholdDeg?.let { sb.append("driftThresholdDeg = ${"%.1f".format(it)}°\n") }
+        exp?.ballNormal?.let { sb.append("ballLocalNormal = [${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]\n") }
+        exp?.cupNormal?.let { sb.append("cupLocalNormal = [${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]\n") }
+        exp?.refNormal?.let { sb.append("refNormal = [${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]\n") }
+        sb.append("trackingStateAtBallSample = ${exp?.trackingStateAtBallSample ?: "—"}\n")
+        sb.append("trackingStateAtCupSample = ${exp?.trackingStateAtCupSample ?: "—"}\n")
+        if (exp?.rejectReason == "plane_drift_too_large") {
+            sb.append("\n⚠ plane_drift_too_large: drift=${exp.experimentalPlaneDriftDeg?.let { "%.1f".format(it) + "°" } ?: "—"} (threshold=${exp.driftThresholdDeg?.let { "%.1f".format(it) + "°" } ?: "—"})\n")
+            exp.ballNormal?.let { sb.append("  ballLocalNormal = [${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]\n") }
+            exp.cupNormal?.let { sb.append("  cupLocalNormal  = [${"%.3f".format(it[0])}, ${"%.3f".format(it[1])}, ${"%.3f".format(it[2])}]\n") }
+        }
+
+        val sh = ui.experimentalSharedSlope
+        val p3l = ui.sharedP3Log
+        if (sh != null || ui.sharedPlaneFitResidualM != null || ui.sharedPlaneSampleCount != null || p3l != null) {
+            sb.append("\n[P3 Shared — SHARED_ONLY · 병렬·제품 미사용]\n")
+            sb.append("forwardPct_shared  = ${sh?.forwardPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+            sb.append("lateralPct_shared  = ${sh?.lateralPct?.let { "%.2f".format(it) + "%" } ?: "—"}\n")
+            sb.append("sharedPlaneFitResidual_m = ${ui.sharedPlaneFitResidualM?.let { "%.4f".format(it) } ?: "—"}\n")
+            sb.append("sharedPlaneSampleCount   = ${ui.sharedPlaneSampleCount ?: "—"}\n")
+            sb.append("blockedReason_shared = ${sh?.blockedReason ?: "none"}\n")
+            p3l?.let { d ->
+                sb.append("quality = ${d.quality} | selectedType = ${d.selectedType ?: "—"} | normalY = ${d.normalYFinal?.let { "%.3f".format(it) } ?: "—"}\n")
+                d.selectionReason?.let { sb.append("selectionReason = $it\n") }
+                d.selectionBlockedReason?.let { sb.append("selectionBlocked = $it\n") }
+                d.rejectedSummary?.let { sb.append("rejectedCandidates = $it\n") }
+                sb.append("prevAngleDeg = ${d.selectedPrevAngleDeg?.let { "%.2f".format(it) } ?: "—"} flip = ${d.selectedFlipApplied} prevDot = ${d.selectedPrevDot?.let { "%.4f".format(it) } ?: "—"}\n")
+                d.trim?.let { t ->
+                    sb.append("TRIM orig=${t.originalCount} rem=${t.removedCount} stay=${t.remainingCount} " +
+                        "origRes=${t.originalResidualMeanM?.let { "%.4f".format(it) } ?: "—"} trimRes=${t.trimmedResidualMeanM?.let { "%.4f".format(it) } ?: "—"}\n")
+                }
+                d.corridor?.let { c ->
+                    sb.append("CORRIDOR dist=${"%.2f".format(c.ballCupDistM)} halfW=${"%.2f".format(c.corridorHalfWidthM)} " +
+                        "in=${c.inputCount} kept=${c.keptCount} rej=${c.rejectedByDistanceCount}\n")
+                }
+                listOfNotNull(d.candidateAll, d.candidateTrimmed, d.candidateCorridor).forEach { c ->
+                    sb.append("CAND ${c.type} valid=${c.valid} score=${c.scoreTotal?.let { "%.2f".format(it) } ?: "—"} " +
+                        "rej=[${c.rejectReasonsJoined()}]\n")
+                }
+            }
+        }
+
+        if (isDebuggableBuild()) {
+            val snap = SlopeFieldTestLog.feedbackSnapshot(ui, ballAnchored, cupAnchored)
+            val col = analyzeUpDownCollapse(ui)
+            sb.append("\n[UPDOWN DBG — 제품=상하만 · lateral 비제품 · SharedP3=필드 1순위 후보 검증]\n")
+            sb.append("graphic final=${snap.finalForwardSource} available=${snap.upDownSlopeAvailable} forwardPct=${snap.forwardPct?.let { String.format(Locale.US, "%.2f", it) } ?: "—"}%\n")
+            sb.append("samePlaneCollapse=${snap.upDownSamePlaneCollapse} reason=${snap.upDownSamePlaneCollapseReason ?: "—"}\n")
+            sb.append("deltaYRaw_m=${col.deltaYRawM?.let { String.format(Locale.US, "%.4f", it) } ?: "—"} ballNy=${col.ballNy?.let { String.format(Locale.US, "%.3f", it) } ?: "—"} cupNy=${col.cupNy?.let { String.format(Locale.US, "%.3f", it) } ?: "—"}\n")
+            sb.append("finalUpDownReason=${snap.finalUpDownNoSlopeReason} class=${snap.finalUpDownNoSlopeClass} flatLabel=${snap.upDownFlatLabel ?: "—"}\n")
+            sb.append("${snap.upDownSlopeSourceCandidate}\n")
+            sb.append("lateralUsedForProduct=${snap.lateralUsedForProduct}\n")
+            sb.append("sharedP3_verify: ${snap.sharedP3UpDownVerificationSummary}\n")
+        }
+
+        sb.append("\n[입력 소스]\n")
+        sb.append("slopeInputSource = ${ui.slopeInputSource ?: "—"}\n")
+        sb.append("ballTrackableType = ${ui.ballTrackableType ?: "—"}\n")
+        sb.append("cupTrackableType = ${ui.cupTrackableType ?: "—"}\n")
+        sb.append("ballPlaneType = ${ui.ballGroundPlaneType ?: "—"}\n")
+        sb.append("cupPlaneType = ${ui.cupPlaneType ?: "—"}\n")
+        sb.append("samePlane = ${ui.ballCupSamePlane?.toString() ?: "—"}\n")
+        sb.append("deltaYRaw = ${ui.deltaYRaw?.let { "%.3f".format(it) + "m" } ?: "—"}\n")
+        sb.append("ballNormalSource = ${ui.ballNormalSource ?: "—"}\n")
+        sb.append("cupNormalSource = ${ui.cupNormalSource ?: "—"}\n")
+        sb.append("\n[상태]\n")
+        val trackStr = when (ui.trackingState) {
+            "TRACKING" -> "GOOD"
+            "LIMITED" -> "LIMITED"
+            "PAUSED", "STOPPED" -> "BAD"
+            else -> ui.trackingState ?: "—"
+        }
+        val blocked = sd?.blockedReason?.takeIf { it.isNotBlank() }
+        sb.append("mode=$modeStr | Tracking=$trackStr | testMode=${if (testModeOn) "ON" else "OFF"} | slopeVisible=${if (slopeVisible) "YES" else "NO"}\n")
+        if (blocked != null) {
+            sb.append("⚠ blocked: $blocked\n")
+        }
+        sb.append("\n")
+
+        if (sd != null) {
+            sb.append("[원시값]\n")
+            sd.hMeters?.let { sb.append("h = ${"%.2f".format(it)}m\n") }
+            sd.vMeters?.let { sb.append("v = ${"%.2f".format(it)}m\n") }
+            sd.forwardPct?.let { sb.append("forwardPct = ${"%.1f".format(it)}\n") }
+            sd.lateralPct?.let { sb.append("lateralPct = ${"%.1f".format(it)}\n") }
+            sd.planeDriftDeg?.let { sb.append("planeDriftDeg = ${"%.1f".format(it)}\n") }
+            sb.append("\n[진단]\n")
+            sb.append("blockedReason = ${sd.blockedReason ?: "none"}\n")
+            sb.append("quality = ${sd.quality}\n")
+
+            if (sd.ballNormal != null || sd.cupNormal != null || sd.ballPos != null) {
+                sb.append("\n[고급]\n")
+                sd.ballNormal?.let { sb.append("ballNormal = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.cupNormal?.let { sb.append("cupNormal  = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.refNormal?.let { sb.append("refNormal  = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.ballPos?.let { sb.append("ballPos = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.cupPos?.let { sb.append("cupPos  = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.forward?.let { sb.append("forward = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.left?.let { sb.append("left    = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+                sd.worldUp?.let { sb.append("worldUp = [${"%.2f".format(it[0])}, ${"%.2f".format(it[1])}, ${"%.2f".format(it[2])}]\n") }
+            }
+        } else {
+            sb.append("[원시값]\n")
+            val hv = ui.horizontalVerticalMeters
+            if (hv != null) {
+                sb.append("h = ${"%.2f".format(hv.first)}m\n")
+                sb.append("v = ${"%.2f".format(hv.second)}m (deltaYRaw)\n")
+            }
+            sb.append("forwardPct = —\n")
+            sb.append("lateralPct = —\n")
+            sb.append("planeDriftDeg = ${ui.ballCupPlaneAngleDeg?.let { "%.1f".format(it) } ?: "—"}\n")
+            sb.append("\n[진단]\n")
+            val blockReason = "slopeDebugInfo null (normal/조건 부족)"
+            sb.append("blockedReason = $blockReason\n")
+            sb.append("quality = —\n")
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 그래픽 결과 페이지용 Bundle (AimmingOverlayView).
+     * **상하경사 우선**: forward만 유효하면 표시 ([SlopeFieldTestLog.resolveGraphic]).
+     * 측면(lateral)은 제품 UI에서 숨김 — 당분간 에이밍 행은 [R.string.slope_lateral_not_shown_product].
+     * 거리는 항상 [V31StateMachine.UiModel.distanceMeters] 기준(경사와 무관).
+     */
+    private fun buildGraphicBundleFromUiModel(ui: V31StateMachine.UiModel): android.os.Bundle {
+        val shared = ui.experimentalSharedSlope
+        val phase1 = ui.slopeDebugInfo
+        val rawM = ui.distanceMeters.takeIf { it.isFinite() && it > 0f } ?: 0f
+        val isKo = Locale.getDefault().language == "ko"
+
+        val gr = SlopeFieldTestLog.resolveGraphic(ui)
+        val upDownAvailable = gr.finalSlopeAvailable
+        val vMeters = gr.vMeters
+        val lateralPct = gr.lateralPct
+        val graphicSource = gr.source
+
+        val slopeCm = if (upDownAvailable && vMeters != null) vMeters * 100f else 0f
+
+        val hM = gr.hMeters
+        val angleDeg =
+            if (upDownAvailable && vMeters != null && hM > 1e-6f) {
+                kotlin.math.atan2(
+                    kotlin.math.abs(vMeters.toDouble()),
+                    hM.toDouble().coerceAtLeast(1e-6)
+                ) * 180.0 / kotlin.math.PI
+            } else {
+                0.0
+            }
+
+        val slopeNotMeasured = getString(R.string.slope_not_measured)
+        val slopeText =
+            if (!upDownAvailable) {
+                slopeNotMeasured
+            } else {
+                val cm = vMeters!! * 100f
+                val absCm = kotlin.math.abs(cm)
+                if (absCm < 1f) {
+                    if (isKo) "평지" else "Flat"
+                } else {
+                    val degStr = String.format(Locale.getDefault(), "%.1f", angleDeg)
+                    val cmInt = kotlin.math.round(absCm).toInt()
+                    if (isKo) {
+                        val dir = if (cm > 0f) "오르막" else "내리막"
+                        "$dir ${cmInt}cm (${degStr}°)"
+                    } else {
+                        val dir = if (cm > 0f) "Uphill" else "Downhill"
+                        "$dir ${cmInt}cm (${degStr}°)"
+                    }
+                }
+            }
+
+        val aimText =
+            if (!upDownAvailable) {
+                slopeNotMeasured
+            } else {
+                getString(R.string.slope_lateral_not_shown_product)
+            }
+
+        val lateralHidden = true
+        val cupsAbs = 0f
+        val aimDir: String? = null
+
+        val conf =
+            when (graphicSource) {
+                "SHARED", "SHARED_RAW" ->
+                    when (ui.sharedP3Log?.quality) {
+                        "GOOD" -> 1f
+                        "DEGRADED" -> 0.7f
+                        "BLOCKED" -> 0f
+                        else -> 0.85f
+                    }
+                "PHASE1" -> {
+                    val drift = phase1?.planeDriftDeg ?: ui.ballCupPlaneAngleDeg ?: 0f
+                    if (drift.isFinite()) {
+                        (1f - (drift / 5f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
+                    } else {
+                        0.5f
+                    }
+                }
+                else -> {
+                    val drift = ui.ballCupPlaneAngleDeg
+                    if (drift != null && drift.isFinite()) {
+                        (1f - (drift / 5f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
+                    } else {
+                        0.5f
+                    }
+                }
+            }
+
+        val slopeValid = upDownAvailable
+        val resultLevel = if (!slopeValid) "LEVEL_1" else "LEVEL_3"
+
+        Log.d(
+            "GRAPHIC_SLOPE",
+            "SLOPE_DISPLAY_DECISION mode=UP_DOWN_ONLY upDownAvailable=$upDownAvailable " +
+                "finalForwardSource=$graphicSource lateralHidden=${lateralHidden} " +
+                "leftRightAvailable=${lateralPct != null}"
+        )
+
+        return android.os.Bundle().apply {
+            putFloat("theta", 0f)
+            putFloat("phiDeg", if (slopeValid && kotlin.math.abs(slopeCm) >= 1f) 1f else 0f)
+            putFloat("pitchDeg", 0f)
+            putFloat("confidence", conf)
+            putFloat("distanceCm", rawM * 100f)
+            putFloat("rawDistanceCm", rawM * 100f)
+            putFloat("effectiveDistanceCm", rawM * 100f)
+            putBoolean("slopeValid", slopeValid)
+            putBoolean("upDownSlopeValid", slopeValid)
+            putBoolean("lateralHidden", lateralHidden)
+            putString("slopeDisplayMode", "UP_DOWN_ONLY")
+            putString("finalForwardSource", graphicSource)
+            putString(
+                "slopeSkippedReason",
+                if (slopeValid) null else (shared?.blockedReason ?: phase1?.blockedReason ?: "plane_normal_missing")
+            )
+            putString("slopeText", slopeText)
+            putString("aimText", aimText)
+            putString("graphicSource", graphicSource)
+            if (slopeValid && slopeCm.isFinite()) {
+                putFloat("slopeCm", slopeCm)
+                putString("slopeDirection", if (slopeCm >= 0f) "UP" else "DOWN")
+            }
+            putString("resultLevel", resultLevel)
+            if (isDebuggableBuild()) {
+                val banner = StringBuilder()
+                lastDistanceFeedbackSnapshot?.let { banner.append(it.debugBannerShort).append('\n') }
+                banner.append(buildDistanceGuardDebugLines(ui))
+                putString("distanceDebugBanner", banner.toString().trim())
+            }
+        }
+    }
+
+    /** 개발 빌드: [FinalDistanceGuard] 요약 (안내 문구·그래픽 배너 공통). */
+    private fun buildDistanceGuardDebugLines(ui: V31StateMachine.UiModel): String {
+        val ad = ui.anchorDistanceMeters
+        val lp = ui.finalDistanceLivePlaneMeters
+        val dm = ui.planeIntersectionVsAnchorDeltaM
+        val dr = ui.planeIntersectionVsAnchorDeltaRatio
+        val px = ui.multiRayProjectedCupPx
+        return buildString {
+            append("DIST DBG\n")
+            append("anchor=").append(ad?.let { String.format(Locale.US, "%.2fm", it) } ?: "—")
+            append(" livePlane=").append(lp?.let { String.format(Locale.US, "%.2fm", it) } ?: "—")
+            append("\ndelta=").append(dm?.let { String.format(Locale.US, "%.2fm", it) } ?: "—")
+            append(" (").append(dr?.let { String.format(Locale.US, "%.1f%%", it * 100f) } ?: "—").append(")")
+            append("\ncupPx=").append(px?.let { String.format(Locale.US, "%.1f", it) } ?: "—")
+            append("\nbefore=").append(ui.finalDistanceSourceBeforeGuard ?: "—")
+            append(" after=").append(ui.finalDistanceSourceAfterGuard ?: "—")
+            append("\nguard=").append(ui.finalDistanceGuardTriggered)
+            append(" ").append(ui.finalDistanceGuardReasons ?: "—")
+            ui.finalDistanceAnchorInvalidReason?.let { append("\nanchorInvalid=").append(it) }
+        }
+    }
+
+    /** 상하경사 표시: hv=(horizontal, vertical)미터. slope % = (v/h)*100, v>0=오르막. */
+    private fun formatUphillDownhillSlope(hv: Pair<Float, Float>?): String {
+        val label = getString(R.string.slope_uphill_downhill)
+        if (hv == null) return "$label —"
+        val (h, v) = hv
+        if (!h.isFinite() || !v.isFinite() || h < 0.01f) return "$label —"
+        val slopePct = (v / h) * 100f
+        val signStr = when {
+            slopePct > 0.05f -> "+"
+            slopePct < -0.05f -> ""
+            else -> ""
+        }
+        val pctStr = String.format(Locale.US, "%.1f", slopePct)
+        return "$label $signStr${pctStr}%"
+    }
+
+    // GREENIQ Distance v1: 기본은 XZ(수평).
+    // debug/test 모드에서는 XYZ 강제 → 경사 계산 경로(horizontalVerticalMeters, slope) 태우기 위해.
+    private fun isAxisXzSelected(): Boolean =
+        !(isDebuggableBuild() || entitlementManager.current.isTestOverride)
 
     private fun refreshDisplayedDistance() {
         // Unit switch should update LIVE/FINAL immediately with correct decimals.
@@ -929,6 +1368,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                         }
                     }
 
+                    val pSlope = prefs()
+                    val slopeSid =
+                        pSlope.getString(KEY_TEST_SESSION_ID, "")?.trim()?.takeIf { it.isNotEmpty() }
+                    val slopeRep = pSlope.getInt(KEY_TEST_REPEAT_INDEX, -1).takeIf { it >= 0 }
+                    val slopeScenario =
+                        pSlope.getString(KEY_TEST_TARGET_SCENARIO, "")?.trim()?.takeIf { it.isNotEmpty() }
+                    engine.setSlopeTestLogContext(slopeSid, slopeRep, slopeScenario)
+
                     // ROI from ViewFinder (screen) -> engine handles hitTest mapping via sampler/mapper
                     val vf = viewFinder
                     if (vf != null) {
@@ -980,6 +1427,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         previewGlView?.onResume()
         updateLastUseNow()
+        billingManager?.queryPurchasesAsync()
+        entitlementManager.refresh()
         scheduleSurveyCheckIfNeeded()
         if (session != null) {
             try {
@@ -988,6 +1437,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 Log.e(TAG, "❌ 카메라 사용 불가", e)
                 txtTracking.text = getString(R.string.status_camera_not_available)
             }
+        }
+        if (proForceResetOnResume) {
+            proForceResetOnResume = false
+            pendingEngineEvents.add(V31StateMachine.UiEvent.ResetPressed)
         }
     }
 
@@ -1016,6 +1469,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         runCatching { cupYoloDetector?.close() }
         cupYoloDetector = null
+        billingManager?.endConnection()
+        billingManager = null
         session?.close()
     }
 
@@ -1265,19 +1720,21 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             lastEndLockTimeMs = null
         }
 
-        // RESULT reached: record a session and potentially show the one-time survey.
+        // RESULT reached: 거리 로그 → JSONL → 세션 기록 (extras는 아직 recentSessions에 이번 측정 미포함)
         if (ui.engineState == V31StateMachine.State.RESULT &&
             lastEngineState != V31StateMachine.State.RESULT
         ) {
-            onResultReached(ui)
-            // Field test: append MEASUREMENT log line
-            appendMeasurementLog(buildMeasurementLogJson(ui))
+            val distExtras = buildDistanceExtras()
+            DistanceFieldTestLog.emitLogcat(ui, distExtras)
+            appendMeasurementLog(buildMeasurementLogJson(ui, distExtras))
+            onResultReached(ui, distExtras)
         }
-        // FAIL reached: append log as well (helps diagnose)
         if (ui.engineState == V31StateMachine.State.FAIL &&
             lastEngineState != V31StateMachine.State.FAIL
         ) {
-            appendMeasurementLog(buildMeasurementLogJson(ui))
+            val distExtras = buildDistanceExtras()
+            DistanceFieldTestLog.emitLogcat(ui, distExtras)
+            appendMeasurementLog(buildMeasurementLogJson(ui, distExtras))
         }
 
         // Keep a copy of the last non-final distance for logging (live_at_finish)
@@ -1392,7 +1849,19 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
                 V31StateMachine.State.END_LOCKED -> getString(R.string.greeniq_hint_cup)
 
-                V31StateMachine.State.RESULT -> getString(R.string.greeniq_hint_done)
+                V31StateMachine.State.RESULT ->
+                    if (isDebuggableBuild()) {
+                        val snap =
+                            lastDistanceFeedbackSnapshot
+                                ?: DistanceFieldTestLog.feedbackSnapshot(ui, buildDistanceExtras())
+                        buildString {
+                            append(getString(R.string.greeniq_hint_done)).append('\n')
+                            append(snap.debugBannerShort).append('\n')
+                            append(buildDistanceGuardDebugLines(ui))
+                        }
+                    } else {
+                        getString(R.string.greeniq_hint_done)
+                    }
             }
         }
 
@@ -1641,6 +2110,34 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 ui.engineState == V31StateMachine.State.END_LOCKED
         txtZoomRatio.visibility = if (ZOOM_UI_ENABLED && inCupPhase) View.VISIBLE else View.GONE
         layoutZoomButtons.visibility = if (ZOOM_UI_ENABLED && inCupPhase) View.VISIBLE else View.GONE
+
+        // 경사 카드: RESULT 시에만 표시.
+        // debug 모드: -Pro 금지, 전체 데이터 표시 (경사 성능 검증 우선).
+        // release: canShowSlope에 따라 잠금/해제.
+        val isResult = ui.engineState == V31StateMachine.State.RESULT
+        val slopeDebugMode = isDebuggableBuild()
+        val slopeVisible = entitlementManager.canShowSlope || slopeDebugMode
+        if (isResult) {
+            val sd = ui.slopeDebugInfo
+
+            // 결과: 완료 시 그래픽 결과로 자동 이동. 측정data 버튼으로 동일 화면 재진입 가능.
+            val debugText = formatSlopeDebugText(ui, sd, ballValidHits != null, cupValidHits != null)
+            lastResultDebugText = debugText
+            lastGraphicBundle = buildGraphicBundleFromUiModel(ui)
+
+            btnResultData.visibility = View.VISIBLE
+
+            if (lastEngineState != V31StateMachine.State.RESULT) {
+                btnResultData.post { openGraphicResultScreen() }
+            }
+
+            // CTA: debug에서는 비노출. release에서만 SHOW_PRO_PAYWALL && !canShow 시 노출
+            layoutProCta.visibility = if (slopeDebugMode) View.GONE else if (SHOW_PRO_PAYWALL && !slopeVisible) View.VISIBLE else View.GONE
+        } else {
+            layoutProCta.visibility = View.GONE
+            btnResultData.visibility = View.GONE
+            lastGraphicBundle = null
+        }
 
         viewFinder?.let { vf ->
             vf.setState(ui.viewFinderState)
@@ -1991,10 +2488,31 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val failReasonCode: String?,
         val screenRotDeg: Int,
         val mirrorH: Boolean,
-        val mirrorV: Boolean
+        val mirrorV: Boolean,
+        val distanceFinalSummary: DistanceFieldTestLog.DistanceFeedbackSnapshot?,
+        val slopeFinalSummary: SlopeFieldTestLog.SlopeFeedbackSnapshot?
     )
 
-    private fun onResultReached(ui: V31StateMachine.UiModel) {
+    /**
+     * RESULT/FAIL 진입 시점에 호출 — 이때는 아직 [onResultReached]로 이번 측정이 deque에 안 들어갔으므로
+     * [recentSessions] 전체가 "이전 완료 측정"만 의미한다.
+     */
+    private fun buildDistanceExtras(): DistanceFieldTestLog.ActivityExtras {
+        val liveAtFinish = lastNonFinalDistanceMeters.takeIf { it.isFinite() && it > 0f }
+        val prior =
+            recentSessions.mapNotNull { s ->
+                s.distanceFinalMeters.takeIf { d -> d.isFinite() && d > 0f }
+            }
+        return DistanceFieldTestLog.ActivityExtras(
+            liveAtFinishM = liveAtFinish,
+            liveSourceAtFinish = lastNonFinalLiveSource,
+            liveRawAtFinish = lastNonFinalLiveRawMeters,
+            centerHitValidAtFinish = lastNonFinalCenterHitValid,
+            priorFinalDistancesM = prior
+        )
+    }
+
+    private fun onResultReached(ui: V31StateMachine.UiModel, distExtras: DistanceFieldTestLog.ActivityExtras) {
         val p = prefs()
         val successCount = p.getInt(KEY_RESULT_SUCCESS_COUNT, 0) + 1
         p.edit().putInt(KEY_RESULT_SUCCESS_COUNT, successCount).apply()
@@ -2007,6 +2525,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val displayed = toUnitValue(finalMeters)
         val dispUnit = if (unitMode == UnitMode.YARD) "yd" else "m"
         val diffCm = if (liveAtFinish == null) null else kotlin.math.abs(finalMeters - liveAtFinish) * 100f
+        val ballOk = ballValidHits != null
+        val cupOk = cupValidHits != null
+        val distSnap = DistanceFieldTestLog.feedbackSnapshot(ui, distExtras)
+        val slopeSnap = SlopeFieldTestLog.feedbackSnapshot(ui, ballOk, cupOk)
         val s =
             FeedbackSession(
                 timestampMs = System.currentTimeMillis(),
@@ -2039,8 +2561,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 failReasonCode = ui.failReasonCode,
                 screenRotDeg = screenRotDeg.toInt(),
                 mirrorH = screenMirrorH,
-                mirrorV = screenMirrorV
+                mirrorV = screenMirrorV,
+                distanceFinalSummary = distSnap,
+                slopeFinalSummary = slopeSnap
             )
+        lastDistanceFeedbackSnapshot = distSnap
         recentSessions.addLast(s)
         while (recentSessions.size > 5) recentSessions.removeFirst()
     }
@@ -2065,12 +2590,17 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
     }
 
-    private fun buildMeasurementLogJson(ui: V31StateMachine.UiModel): String {
+    private fun buildMeasurementLogJson(ui: V31StateMachine.UiModel, distExtras: DistanceFieldTestLog.ActivityExtras): String {
         val p = prefs()
         val distanceGroup = p.getString(KEY_TEST_DISTANCE_GROUP, "2m") ?: "2m"
         val groundTruth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, 0f).toDouble()
         val light = p.getString(KEY_TEST_LIGHT, "SUNNY") ?: "SUNNY"
         val notes = p.getString(KEY_TEST_NOTES, "") ?: ""
+        val testSessionIdLog =
+            p.getString(KEY_TEST_SESSION_ID, "")?.trim()?.takeIf { it.isNotEmpty() }
+        val testRepeatIndexLog = p.getInt(KEY_TEST_REPEAT_INDEX, -1).takeIf { it >= 0 }
+        val testTargetScenarioLog =
+            p.getString(KEY_TEST_TARGET_SCENARIO, "")?.trim()?.takeIf { it.isNotEmpty() }
 
         // Timestamp (for JSONL ordering / "latest" clarity)
         val tsMs = System.currentTimeMillis()
@@ -2275,13 +2805,144 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"liveAtFinish_m\":").append(String.format(Locale.US, "%.3f", liveAtFinish)).append(",")
         sb.append("\"finalDistance_m\":").append(String.format(Locale.US, "%.3f", finalMeters)).append(",")
         sb.append("\"ballCupPlaneAngleDeg\":").append(String.format(Locale.US, "%.2f", ballCupPlaneAngleDeg ?: 0f)).append(",")
+        sb.append("\"ballCupSamePlane\":").append(ui.ballCupSamePlane?.toString() ?: "null").append(",")
+        sb.append("\"cupPlaneType\":\"").append(escJson(ui.cupPlaneType ?: "")).append("\",")
         sb.append("\"liveFinalDiff_cm\":").append(String.format(Locale.US, "%.3f", liveFinalDiffCm)).append(",")
         sb.append("\"error_cm\":").append(String.format(Locale.US, "%.3f", errorCm))
         sb.append("},")
 
+        sb.append("\"slopePhase1\":{")
+        sb.append("\"slopeInputSource\":\"").append(escJson(ui.slopeInputSource ?: "")).append("\",")
+        sb.append("\"ballTrackableType\":\"").append(escJson(ui.ballTrackableType ?: "")).append("\",")
+        sb.append("\"cupTrackableType\":\"").append(escJson(ui.cupTrackableType ?: "")).append("\",")
+        sb.append("\"ballPlaneType\":\"").append(escJson(ui.ballGroundPlaneType ?: "")).append("\",")
+        sb.append("\"cupPlaneType\":\"").append(escJson(ui.cupPlaneType ?: "")).append("\",")
+        sb.append("\"samePlane\":").append(ui.ballCupSamePlane?.toString() ?: "null").append(",")
+        sb.append("\"deltaYRaw_m\":").append(ui.deltaYRaw?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(",")
+        sb.append("\"ballNormalSource\":\"").append(escJson(ui.ballNormalSource ?: "")).append("\",")
+        sb.append("\"cupNormalSource\":\"").append(escJson(ui.cupNormalSource ?: "")).append("\",")
+        sb.append("\"forwardPct\":").append(ui.slopeDebugInfo?.forwardPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+        sb.append("\"lateralPct\":").append(ui.slopeDebugInfo?.lateralPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+        sb.append("\"blockedReason\":\"").append(escJson(ui.slopeDebugInfo?.blockedReason ?: "")).append("\",")
+        sb.append("\"quality\":\"").append(escJson(ui.slopeDebugInfo?.quality ?: "")).append("\"")
+        sb.append("},")
+
+        // LocalSurfaceFit (Experimental) — 디버그 패널과 동일 항목을 JSON 내보내기에 포함
+        val se = ui.slopeExperimentalResult
+        fun vec3Json(v: FloatArray?): String {
+            if (v == null || v.size < 3) return "null"
+            return "[" +
+                String.format(Locale.US, "%.6f", v[0]) + "," +
+                String.format(Locale.US, "%.6f", v[1]) + "," +
+                String.format(Locale.US, "%.6f", v[2]) + "]"
+        }
+        sb.append("\"slopeExperimental\":{")
+        if (se == null) {
+            sb.append("\"sourceId\":null,\"forwardPct\":null,\"lateralPct\":null,\"quality\":null,\"rejectReason\":null")
+            sb.append(",\"ballInputSource\":null,\"cupInputSource\":null,\"sampleCountBall\":null,\"sampleCountCup\":null")
+            sb.append(",\"fitResidualBall_m\":null,\"fitResidualCup_m\":null")
+            sb.append(",\"experimentalPlaneDriftDeg\":null,\"driftThresholdDeg\":null")
+            sb.append(",\"ballLocalNormal\":null,\"cupLocalNormal\":null,\"refNormal\":null")
+            sb.append(",\"trackingStateAtBallSample\":null,\"trackingStateAtCupSample\":null")
+            sb.append(",\"ballSampleTimestampMs\":null,\"cupSampleTimestampMs\":null")
+            sb.append(",\"experimentalDiagnostics\":null")
+        } else {
+            sb.append("\"sourceId\":\"").append(escJson(se.sourceId)).append("\",")
+            sb.append("\"forwardPct\":").append(se.forwardPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+            sb.append("\"lateralPct\":").append(se.lateralPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+            sb.append("\"quality\":\"").append(escJson(se.quality)).append("\",")
+            sb.append("\"rejectReason\":\"").append(escJson(se.rejectReason ?: "")).append("\",")
+            sb.append("\"ballInputSource\":\"").append(escJson(se.ballInputSource ?: "")).append("\",")
+            sb.append("\"cupInputSource\":\"").append(escJson(se.cupInputSource ?: "")).append("\",")
+            sb.append("\"sampleCountBall\":").append(se.sampleCountBall).append(",")
+            sb.append("\"sampleCountCup\":").append(se.sampleCountCup).append(",")
+            sb.append("\"fitResidualBall_m\":").append(se.fitResidualBall?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(",")
+            sb.append("\"fitResidualCup_m\":").append(se.fitResidualCup?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(",")
+            sb.append("\"experimentalPlaneDriftDeg\":").append(se.experimentalPlaneDriftDeg?.let { String.format(Locale.US, "%.2f", it) } ?: "null").append(",")
+            sb.append("\"driftThresholdDeg\":").append(se.driftThresholdDeg?.let { String.format(Locale.US, "%.2f", it) } ?: "null").append(",")
+            sb.append("\"ballLocalNormal\":").append(vec3Json(se.ballNormal)).append(",")
+            sb.append("\"cupLocalNormal\":").append(vec3Json(se.cupNormal)).append(",")
+            sb.append("\"refNormal\":").append(vec3Json(se.refNormal)).append(",")
+            sb.append("\"trackingStateAtBallSample\":\"").append(escJson(se.trackingStateAtBallSample ?: "")).append("\",")
+            sb.append("\"trackingStateAtCupSample\":\"").append(escJson(se.trackingStateAtCupSample ?: "")).append("\",")
+            sb.append("\"ballSampleTimestampMs\":").append(se.ballSampleTimestampMs ?: "null").append(",")
+            sb.append("\"cupSampleTimestampMs\":").append(se.cupSampleTimestampMs ?: "null").append(",")
+            sb.append("\"experimentalDiagnostics\":")
+            sb.append(experimentalSlopeDiagnosticsToJson(se.experimentalDiagnostics, ::escJson, ::vec3Json))
+        }
+        sb.append("},")
+
+        val sh = ui.experimentalSharedSlope
+        val p3l = ui.sharedP3Log
+        fun fmt4f(x: Float?): String = if (x == null) "null" else String.format(Locale.US, "%.4f", x)
+        sb.append("\"slopeSharedP3\":{")
+        if (sh == null && ui.sharedPlaneFitResidualM == null && ui.sharedPlaneSampleCount == null && p3l == null) {
+            sb.append("\"forwardPct\":null,\"lateralPct\":null,\"blockedReason\":null")
+            sb.append(",\"sharedPlaneFitResidual_m\":null,\"sharedPlaneSampleCount\":null")
+            sb.append(",\"refNormal\":null,\"quality\":null")
+            sb.append(",\"sharedPlaneCandidateCount\":null")
+            appendSharedP3DetailsNull(sb)
+        } else {
+            sb.append("\"forwardPct\":").append(sh?.forwardPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+            sb.append("\"lateralPct\":").append(sh?.lateralPct?.let { String.format(Locale.US, "%.3f", it) } ?: "null").append(",")
+            sb.append("\"blockedReason\":\"").append(escJson(sh?.blockedReason ?: "")).append("\",")
+            sb.append("\"sharedPlaneFitResidual_m\":").append(ui.sharedPlaneFitResidualM?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(",")
+            sb.append("\"sharedPlaneSampleCount\":").append(ui.sharedPlaneSampleCount ?: "null").append(",")
+            sb.append("\"refNormal\":").append(vec3Json(sh?.refNormal)).append(",")
+            sb.append("\"quality\":\"").append(escJson(sh?.quality ?: "")).append("\",")
+            sb.append("\"sharedPlaneCandidateCount\":").append(if (p3l != null) "3" else "null").append(",")
+            if (p3l != null) {
+                p3l.appendJson(sb, ::escJson, ::vec3Json, ::fmt4f, ::fmt4f)
+            } else {
+                appendSharedP3DetailsNull(sb)
+            }
+        }
+        sb.append("},")
+
+        val distSnapForLine = DistanceFieldTestLog.feedbackSnapshot(ui, distExtras)
+        sb.append("\"distanceFinalSummary\":")
+        DistanceFieldTestLog.appendDistanceFeedbackJson(sb, distSnapForLine, ::escJson)
+        sb.append(',')
+        sb.append("\"finalDistanceGuard\":")
+        if (isResult) {
+            sb.append('{')
+            sb.append("\"anchorDistanceM\":").append(ui.anchorDistanceMeters?.let { String.format(Locale.US, "%.6f", it) } ?: "null").append(',')
+            sb.append("\"livePlaneDistanceM\":").append(ui.finalDistanceLivePlaneMeters?.let { String.format(Locale.US, "%.6f", it) } ?: "null").append(',')
+            sb.append("\"planeIntersectionVsAnchorDeltaM\":").append(ui.planeIntersectionVsAnchorDeltaM?.let { String.format(Locale.US, "%.6f", it) } ?: "null").append(',')
+            sb.append("\"planeIntersectionVsAnchorDeltaRatio\":").append(ui.planeIntersectionVsAnchorDeltaRatio?.let { String.format(Locale.US, "%.6f", it) } ?: "null").append(',')
+            sb.append("\"projectedCupPx\":").append(ui.multiRayProjectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null").append(',')
+            sb.append("\"finalDistanceSourceBeforeGuard\":\"").append(escJson(ui.finalDistanceSourceBeforeGuard ?: "")).append("\",")
+            sb.append("\"finalDistanceSourceAfterGuard\":\"").append(escJson(ui.finalDistanceSourceAfterGuard ?: "")).append("\",")
+            sb.append("\"finalDistanceGuardTriggered\":").append(ui.finalDistanceGuardTriggered).append(',')
+            sb.append("\"finalDistanceGuardReasons\":\"").append(escJson(ui.finalDistanceGuardReasons ?: "")).append("\",")
+            sb.append("\"finalDistanceAnchorInvalidReason\":")
+            if (ui.finalDistanceAnchorInvalidReason == null) sb.append("null") else sb.append("\"").append(escJson(ui.finalDistanceAnchorInvalidReason!!)).append("\"")
+            sb.append(',')
+            sb.append("\"guardConfigMaxDeltaM\":").append(FinalDistanceGuardConfig.MAX_PLANE_ANCHOR_DELTA_M).append(',')
+            sb.append("\"guardConfigMaxRatio\":").append(FinalDistanceGuardConfig.MAX_PLANE_ANCHOR_DELTA_RATIO).append(',')
+            sb.append("\"guardConfigMinProjectedCupPx\":").append(FinalDistanceGuardConfig.MIN_PROJECTED_CUP_PX)
+            sb.append('}')
+        } else {
+            sb.append("null")
+        }
+        sb.append(',')
+
+        val slopeSnapForLine = SlopeFieldTestLog.feedbackSnapshot(ui, ballFixed, cupFixed)
+        sb.append("\"slopeFinalSummary\":")
+        SlopeFieldTestLog.appendSlopeFeedbackSnapshotJson(sb, slopeSnapForLine, ::escJson)
+        sb.append(',')
+
+        sb.append("\"experimentalSlopeKpi\":")
+        sb.append(ExperimentalSlopeKpi.toJsonSnapshot())
+        sb.append(',')
         sb.append("\"trackingStateAtCup\":\"").append(escJson(trackingAtCup)).append("\",")
         sb.append("\"lightCondition\":\"").append(escJson(light)).append("\",")
-        sb.append("\"notes\":\"").append(escJson(notes)).append("\"")
+        sb.append("\"notes\":\"").append(escJson(notes)).append("\",")
+        sb.append("\"testSessionId\":")
+        if (testSessionIdLog == null) sb.append("null") else sb.append("\"").append(escJson(testSessionIdLog)).append("\"")
+        sb.append(",\"testRepeatIndex\":").append(testRepeatIndexLog ?: "null")
+        sb.append(",\"testTargetScenario\":")
+        if (testTargetScenarioLog == null) sb.append("null") else sb.append("\"").append(escJson(testTargetScenarioLog)).append("\"")
         sb.append("}")
         return sb.toString()
     }
@@ -2556,7 +3217,72 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             if (last.endLockTimeMs != null) sb.append("- END lock(ms): ").append(last.endLockTimeMs).append('\n')
         }
         sb.append('\n')
-        sb.append("(See attached log file.)\n")
+        val lastDist = recentSessions.lastOrNull()?.distanceFinalSummary
+        if (lastDist != null) {
+            sb.append("- Distance: ").append(lastDist.debugBannerShort)
+                .append(" class=").append(lastDist.finalDistanceClass)
+                .append(" reason=").append(lastDist.finalDistanceReason).append('\n')
+            sb.append("- DistFix: ballSum=").append(lastDist.ballFixSummary)
+                .append(" cupSum=").append(lastDist.cupFixSummary)
+                .append(" rawBall=").append(lastDist.ballFixRaw)
+                .append(" rawCup=").append(lastDist.cupFixRaw).append('\n')
+            if (lastDist.liveAtFinishM != null && lastDist.anchorDistanceM != null) {
+                sb.append("- LiveVsAnchor(m): live=").append(String.format(Locale.US, "%.3f", lastDist.liveAtFinishM))
+                    .append(" anchor=").append(String.format(Locale.US, "%.3f", lastDist.anchorDistanceM!!))
+                    .append('\n')
+            }
+            if (lastDist.finalDistanceSourceBeforeGuard != null) {
+                sb.append("- DistGuard: triggered=").append(lastDist.finalDistanceGuardTriggered)
+                    .append(" before=").append(lastDist.finalDistanceSourceBeforeGuard ?: "—")
+                    .append(" after=").append(lastDist.finalDistanceSourceAfterGuard ?: "—")
+                if (lastDist.finalDistanceGuardReasons != null) {
+                    sb.append(" reasons=").append(lastDist.finalDistanceGuardReasons)
+                }
+                sb.append('\n')
+            }
+            if (lastDist.cupCandidateVsLiveHitXZDeltaMAtCommit != null ||
+                lastDist.cupEndAnchorCommitGateThresholdM != null ||
+                lastDist.cupEndAnchorCommitStrictFar != null ||
+                lastDist.cupEndAnchorGateBypassedMaxRetries != null ||
+                lastDist.cupEndAnchorCommitBypassSession != null ||
+                lastDist.cupLiveWorldFrameTimestampNs != null
+            ) {
+                sb.append("- CupEndAnchor(commit): gateDeltaXZ_m=")
+                    .append(
+                        lastDist.cupCandidateVsLiveHitXZDeltaMAtCommit?.let { String.format(Locale.US, "%.3f", it) } ?: "—"
+                    )
+                    .append(" thr_m=")
+                    .append(
+                        lastDist.cupEndAnchorCommitGateThresholdM?.let { String.format(Locale.US, "%.3f", it) } ?: "—"
+                    )
+                    .append(" strictFar=").append(lastDist.cupEndAnchorCommitStrictFar)
+                    .append(" bypassMaxRetries=").append(lastDist.cupEndAnchorGateBypassedMaxRetries)
+                if (lastDist.cupEndAnchorCommitBypassSession == true) {
+                    sb.append(" [bypass after max retries]")
+                }
+                sb.append(" liveFrameNs=").append(lastDist.cupLiveWorldFrameTimestampNs?.toString() ?: "—")
+                sb.append(" alignGateSameTick=").append(lastDist.cupLiveAlignAndGateSameFrame)
+                    .append('\n')
+            }
+        }
+        val lastSlope = recentSessions.lastOrNull()?.slopeFinalSummary
+        if (lastSlope != null) {
+            sb.append("- Slope: mode=").append(lastSlope.finalSlopeDisplayMode)
+                .append(" forward=").append(lastSlope.finalForwardSource)
+                .append(" upDownAvail=").append(lastSlope.upDownSlopeAvailable).append('\n')
+            sb.append("- SlopeUpDown: ")
+                .append(lastSlope.finalUpDownNoSlopeReason)
+                .append(" class=").append(lastSlope.finalUpDownNoSlopeClass)
+                .append(" collapse=").append(lastSlope.upDownSamePlaneCollapse)
+                .append('\n')
+            if (lastSlope.sharedP3UpDownVerificationSummary.isNotBlank()) {
+                sb.append("- SharedP3UpDown: ").append(lastSlope.sharedP3UpDownVerificationSummary).append('\n')
+            }
+        }
+        sb.append(
+            "(See attached JSON: lastDistanceFinalSummary (incl. cupCandidateVsLiveHitXZDeltaMAtCommit, cupEndAnchor*), " +
+                "lastFinalDistanceGuard, lastSlopeFinalSummary, recentSessions, measurements.)\n"
+        )
         return sb.toString()
     }
 
@@ -2640,6 +3366,16 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         sb.append("  ],\n")
 
+        sb.append("  \"lastDistanceFinalSummary\": ")
+        DistanceFieldTestLog.appendDistanceFeedbackJson(sb, recentSessions.lastOrNull()?.distanceFinalSummary, ::esc)
+        sb.append(",\n")
+        sb.append("  \"lastFinalDistanceGuard\": ")
+        DistanceFieldTestLog.appendFinalDistanceGuardJson(sb, recentSessions.lastOrNull()?.distanceFinalSummary, ::esc)
+        sb.append(",\n")
+        sb.append("  \"lastSlopeFinalSummary\": ")
+        SlopeFieldTestLog.appendSlopeFeedbackSnapshotJson(sb, recentSessions.lastOrNull()?.slopeFinalSummary, ::esc)
+        sb.append(",\n")
+
         sb.append("  \"recentSessions\": [\n")
         recentSessions.forEachIndexed { idx, s ->
             sb.append("    {\n")
@@ -2678,7 +3414,16 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             sb.append("      \"failReasonCode\": ").append(if (s.failReasonCode == null) "null" else "\"${esc(s.failReasonCode)}\"").append(",\n")
             sb.append("      \"screenRotationDeg\": ").append(s.screenRotDeg).append(",\n")
             sb.append("      \"mirrorH\": ").append(s.mirrorH).append(",\n")
-            sb.append("      \"mirrorV\": ").append(s.mirrorV).append("\n")
+            sb.append("      \"mirrorV\": ").append(s.mirrorV).append(",\n")
+            sb.append("      \"distanceFinalSummary\": ")
+            DistanceFieldTestLog.appendDistanceFeedbackJson(sb, s.distanceFinalSummary, ::esc)
+            sb.append(",\n")
+            sb.append("      \"finalDistanceGuard\": ")
+            DistanceFieldTestLog.appendFinalDistanceGuardJson(sb, s.distanceFinalSummary, ::esc)
+            sb.append(",\n")
+            sb.append("      \"slopeFinalSummary\": ")
+            SlopeFieldTestLog.appendSlopeFeedbackSnapshotJson(sb, s.slopeFinalSummary, ::esc)
+            sb.append("\n")
             sb.append("    }")
             if (idx != recentSessions.size - 1) sb.append(',')
             sb.append('\n')
@@ -2761,6 +3506,24 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         root.addView(itemAcc)
         root.addView(itemGuide)
         root.addView(itemFeedback)
+        // Pro 테스트 모드: debug 빌드에서만 노출. slope 기능 테스트용.
+        if (isDebuggableBuild()) {
+            val proTestLabel = if (entitlementManager.isTestOverrideEnabled()) {
+                getString(R.string.pro_test_mode_on)
+            } else {
+                getString(R.string.pro_test_mode_off)
+            }
+            root.addView(mkItem(proTestLabel) {
+                entitlementManager.setTestOverride(!entitlementManager.isTestOverrideEnabled())
+                Toast.makeText(
+                    this,
+                    if (entitlementManager.isTestOverrideEnabled()) "Pro test ON" else "Pro test OFF",
+                    Toast.LENGTH_SHORT
+                ).show()
+                dialog.dismiss()
+                showSettingsBottomSheet()
+            })
+        }
         root.addView(btnClose)
 
         dialog.setContentView(root)
@@ -2797,8 +3560,45 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val savedTruth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, 0f)
         val savedLight = p.getString(KEY_TEST_LIGHT, "SUNNY") ?: "SUNNY"
         val savedNotes = p.getString(KEY_TEST_NOTES, "") ?: ""
+        val savedSessionId = p.getString(KEY_TEST_SESSION_ID, "") ?: ""
+        val savedRepeat = p.getInt(KEY_TEST_REPEAT_INDEX, -1)
+        val savedScenario = p.getString(KEY_TEST_TARGET_SCENARIO, "") ?: ""
 
         root.addView(title)
+
+        root.addView(label("Session ID (slope log correlation)"))
+        val editSessionId = EditText(this).apply {
+            setText(savedSessionId)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            setPadding(16, 14, 16, 14)
+            hint = "e.g., 20260327_green_01"
+            setHintTextColor(Color.parseColor("#808080"))
+        }
+        root.addView(editSessionId)
+
+        root.addView(label("Repeat index (0, 1, 2… empty = unset)"))
+        val editRepeat = EditText(this).apply {
+            setText(if (savedRepeat >= 0) savedRepeat.toString() else "")
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            setPadding(16, 14, 16, 14)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "optional"
+            setHintTextColor(Color.parseColor("#808080"))
+        }
+        root.addView(editRepeat)
+
+        root.addView(label("Target scenario (optional)"))
+        val editScenario = EditText(this).apply {
+            setText(savedScenario)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#2A2A2A"))
+            setPadding(16, 14, 16, 14)
+            hint = "e.g., flat / uphill"
+            setHintTextColor(Color.parseColor("#808080"))
+        }
+        root.addView(editScenario)
 
         root.addView(label("Distance group"))
         val groupDistance = android.widget.RadioGroup(this).apply { orientation = android.widget.RadioGroup.HORIZONTAL }
@@ -2883,11 +3683,19 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                         else -> "SUNNY"
                     }
                 val notes = editNotes.text.toString()
+                val sessionId = editSessionId.text.toString().trim()
+                val repeatStr = editRepeat.text.toString().trim()
+                val repeatIdx =
+                    if (repeatStr.isEmpty()) -1 else repeatStr.toIntOrNull()?.coerceAtLeast(0) ?: -1
+                val scenario = editScenario.text.toString().trim()
                 p.edit()
                     .putString(KEY_TEST_DISTANCE_GROUP, dg)
                     .putFloat(KEY_TEST_GROUND_TRUTH_M, truth)
                     .putString(KEY_TEST_LIGHT, light)
                     .putString(KEY_TEST_NOTES, notes)
+                    .putString(KEY_TEST_SESSION_ID, sessionId)
+                    .putInt(KEY_TEST_REPEAT_INDEX, repeatIdx)
+                    .putString(KEY_TEST_TARGET_SCENARIO, scenario)
                     .apply()
                 dialog.dismiss()
             }
