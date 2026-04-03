@@ -28,6 +28,14 @@
     <string name="ball_hint_warmup">Slowly scan the floor left and right</string>
     <string name="ball_hint_distance">Move back; ball is too close</string>
     <string name="ball_hint_hits">Hold the ball steady, then tap BALL</string>
+    <!-- BALL gate: [BallBlockedReason] (release) -->
+    <string name="ball_blocked_true_too_close">Stay at least 30 cm from the ball</string>
+    <string name="ball_blocked_start_distance_not_ready">Preparing distance measurement</string>
+    <string name="ball_blocked_ar_warmup">Recognizing the floor…</string>
+    <string name="ball_blocked_tracking">Waiting for tracking…</string>
+    <string name="ball_blocked_stabilize_ball">Hold the ball position steady for a moment</string>
+    <string name="ball_blocked_hit_not_found">Point the camera at the ball again</string>
+    <string name="ball_blocked_previous_state">Previous measurement state may remain. Try again.</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">More options</string>
     <string name="cd_settings">Settings</string>

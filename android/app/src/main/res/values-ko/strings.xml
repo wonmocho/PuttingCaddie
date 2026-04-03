@@ -28,6 +28,14 @@
     <string name="ball_hint_warmup">바닥을 천천히 좌우로 비춰 주세요</string>
     <string name="ball_hint_distance">거리가 너무 가깝습니다. 멀리서 다시 시도하세요</string>
     <string name="ball_hint_hits">공을 안정적으로 맞춘 후 BALL을 누르세요</string>
+    <!-- BALL gate: [BallBlockedReason] (release) -->
+    <string name="ball_blocked_true_too_close">공에서 너무 가깝습니다 (30cm 이상 떨어져 주세요)</string>
+    <string name="ball_blocked_start_distance_not_ready">거리 측정 준비 중입니다</string>
+    <string name="ball_blocked_ar_warmup">바닥 인식 준비 중입니다</string>
+    <string name="ball_blocked_tracking">트래킹 준비 중입니다</string>
+    <string name="ball_blocked_stabilize_ball">공 위치를 잠시 안정적으로 유지해 주세요</string>
+    <string name="ball_blocked_hit_not_found">공 위치를 다시 인식해 주세요</string>
+    <string name="ball_blocked_previous_state">이전 측정 상태가 남아 있습니다. 다시 시도해 주세요</string>
     <string name="greeniq_reset">reset</string>
     <string name="cd_more">추가 옵션</string>
     <string name="cd_settings">설정</string>

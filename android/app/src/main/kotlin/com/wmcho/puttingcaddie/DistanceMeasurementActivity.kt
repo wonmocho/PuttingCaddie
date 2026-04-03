@@ -1400,10 +1400,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                                     "centerLocalUnzoom=(${String.format(Locale.US, "%.1f", localUnzoom?.x ?: 0f)},${String.format(Locale.US, "%.1f", localUnzoom?.y ?: 0f)})"
                             )
                         }
-                        val ui = engine.onFrame(frame, roiForEngine, nowNs)
+                        val ui = engine.onFrame(frame, roiForEngine, nowNs, currentSession)
                         if (shadowLegacy && engine !== legacyEngine) {
                             legacyEngine?.setAxisMode(axis)
-                            legacyEngine?.onFrame(frame, roiForEngine, nowNs) // compute only; ignore result
+                            legacyEngine?.onFrame(frame, roiForEngine, nowNs, currentSession) // compute only; ignore result
                         }
                         runOnUiThread { applyUiModel(ui) }
                     }
@@ -1792,26 +1792,15 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
         // Golf hint text (keep it simple; no technical box)
         val cupTooSmall = ui.multiRayProjectedCupPx != null && ui.multiRayProjectedCupPx!! < 22f
-        // BALL 비활성 시: blockedReason 1개만 표시 (디버그=상세, 릴리즈=안내문구)
-        val ballHintResId = when (ui.ballBlockedReason) {
-            "tracking_not_ready" -> R.string.ball_hint_tracking
-            "warmup_not_ready" -> R.string.ball_hint_warmup
-            "too_close_distance_not_ready" -> R.string.ball_hint_distance
-            "insufficient_stable_hits" -> R.string.ball_hint_hits
-            else -> null
-        }
-        // C. 개발 빌드: BALL/CUP 버튼 막힌 이유 (쉬운 표현, 0/35 형식 유지)
+        // BALL 비활성 시: [BallBlockedReason] 1개만 표시 (디버그=상세, 릴리즈=안내문구)
+        val ballBlockedReason = ui.ballBlockedReason
+        val ballHintResId = ballBlockedReasonToHintRes(ballBlockedReason)
+        // C. 개발 빌드: BALL/CUP 버튼 막힌 이유 (쉬운 표현, warmup 시 0/35 형식 유지)
         txtInstruction.text = when {
-            isDebuggableBuild() && !ui.startEnabled && ui.ballBlockedReason != null -> {
+            isDebuggableBuild() && !ui.startEnabled && ballBlockedReason != null -> {
                 val s = ui.ballArWarmupSuccessCount ?: 0
                 val r = ui.ballArWarmupRequired ?: 35
-                when (ui.ballBlockedReason) {
-                    "tracking_not_ready" -> getString(R.string.debug_ball_tracking)
-                    "warmup_not_ready" -> getString(R.string.debug_ball_ground_scan, s, r)
-                    "too_close_distance_not_ready" -> getString(R.string.debug_ball_too_close)
-                    "insufficient_stable_hits" -> getString(R.string.debug_ball_steady)
-                    else -> getString(R.string.debug_ball_ground_scan, s, r)
-                }
+                ballBlockedReasonToDebugInstruction(this, ballBlockedReason, s, r)
             }
             isDebuggableBuild() && !ui.finishEnabled && ui.cupBlockedReason != null &&
                 (ui.engineState == V31StateMachine.State.AIM_END || ui.engineState == V31StateMachine.State.FAIL) ->
@@ -4082,4 +4071,39 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         dialog.show()
     }
 }
+
+/** [UiModel.ballBlockedReason] → 릴리즈 힌트 (버튼 비활성 시). */
+private fun ballBlockedReasonToHintRes(reason: BallBlockedReason?): Int? =
+    when (reason) {
+        null, BallBlockedReason.NONE -> null
+        BallBlockedReason.TRACKING_NOT_READY -> R.string.ball_blocked_tracking
+        BallBlockedReason.AR_WARMUP_NOT_READY -> R.string.ball_blocked_ar_warmup
+        BallBlockedReason.START_DISTANCE_NOT_READY -> R.string.ball_blocked_start_distance_not_ready
+        BallBlockedReason.TRUE_TOO_CLOSE -> R.string.ball_blocked_true_too_close
+        BallBlockedReason.HIT_NOT_FOUND -> R.string.ball_blocked_hit_not_found
+        BallBlockedReason.INSUFFICIENT_STABLE_HITS,
+        BallBlockedReason.UNSTABLE_DISTANCE,
+        BallBlockedReason.JUMP_REJECTED -> R.string.ball_blocked_stabilize_ball
+        BallBlockedReason.PREVIOUS_STATE_INTERFERENCE -> R.string.ball_blocked_previous_state
+    }
+
+/** 개발 빌드: warmup은 0/35 스캔 문구 유지, 나머지는 reason별 안내. */
+private fun ballBlockedReasonToDebugInstruction(
+    ctx: Context,
+    reason: BallBlockedReason,
+    warmupSuccess: Int,
+    warmupRequired: Int
+): String =
+    when (reason) {
+        BallBlockedReason.TRACKING_NOT_READY -> ctx.getString(R.string.debug_ball_tracking)
+        BallBlockedReason.AR_WARMUP_NOT_READY -> ctx.getString(R.string.debug_ball_ground_scan, warmupSuccess, warmupRequired)
+        BallBlockedReason.START_DISTANCE_NOT_READY -> ctx.getString(R.string.ball_blocked_start_distance_not_ready)
+        BallBlockedReason.TRUE_TOO_CLOSE -> ctx.getString(R.string.ball_blocked_true_too_close)
+        BallBlockedReason.HIT_NOT_FOUND -> ctx.getString(R.string.ball_blocked_hit_not_found)
+        BallBlockedReason.INSUFFICIENT_STABLE_HITS,
+        BallBlockedReason.UNSTABLE_DISTANCE,
+        BallBlockedReason.JUMP_REJECTED -> ctx.getString(R.string.ball_blocked_stabilize_ball)
+        BallBlockedReason.PREVIOUS_STATE_INTERFERENCE -> ctx.getString(R.string.ball_blocked_previous_state)
+        BallBlockedReason.NONE -> ctx.getString(R.string.debug_ball_ground_scan, warmupSuccess, warmupRequired)
+    }
 

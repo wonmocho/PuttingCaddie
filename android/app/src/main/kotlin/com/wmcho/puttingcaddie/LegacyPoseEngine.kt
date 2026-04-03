@@ -3,6 +3,7 @@ package com.wmcho.puttingcaddie
 import android.graphics.Color
 import android.graphics.RectF
 import com.google.ar.core.Frame
+import com.google.ar.core.Session
 
 /**
  * Safety net only.
@@ -24,7 +25,7 @@ class LegacyPoseEngine : MeasurementEngine {
         if (e is V31StateMachine.UiEvent.ResetPressed) reset()
     }
 
-    override fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long): V31StateMachine.UiModel {
+    override fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long, session: Session): V31StateMachine.UiModel {
         // No UI impact intended. Provide a safe default model.
         return V31StateMachine.UiModel(
             engineState = V31StateMachine.State.IDLE,

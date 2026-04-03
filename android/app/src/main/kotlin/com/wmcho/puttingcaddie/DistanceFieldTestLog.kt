@@ -118,6 +118,10 @@ object DistanceFieldTestLog {
         val cupLiveWorldFrameTimestampNs: Long?,
         /** 멀티레이 정렬·게이트가 동일 틱 LIVE 스냅샷을 썼는지(타임스탬프 있으면 true) */
         val cupLiveAlignAndGateSameFrame: Boolean,
+        /** 컵 END translation 소스 — [LIVE_DISTANCE_WORLD] 등 [UiModel]과 동일 */
+        val cupEndAnchorPositionSource: String?,
+        /** 앵커 포즈 vs freeze 직전 live world XZ(m) */
+        val cupEndAnchorVsLiveWorldXZM: Float?,
         val debugBannerShort: String
     )
 
@@ -303,6 +307,8 @@ object DistanceFieldTestLog {
             cupEndAnchorCommitBypassSession = ui.cupEndAnchorCommitBypassSession,
             cupLiveWorldFrameTimestampNs = ui.cupLiveWorldFrameTimestampNs,
             cupLiveAlignAndGateSameFrame = ui.cupLiveWorldFrameTimestampNs != null,
+            cupEndAnchorPositionSource = ui.cupEndAnchorPositionSource,
+            cupEndAnchorVsLiveWorldXZM = ui.cupEndAnchorVsLiveWorldXZM,
             debugBannerShort = banner
         )
     }
@@ -505,6 +511,8 @@ object DistanceFieldTestLog {
         Log.d(
             TAG,
             "CUP_END_ANCHOR_COMMIT_JSON " +
+                "anchorPosSrc=${s.cupEndAnchorPositionSource ?: "null"} " +
+                "anchorVsLiveWorldXZ_m=${s.cupEndAnchorVsLiveWorldXZM?.let { fmt(it) } ?: "null"} " +
                 "gateDeltaAtCommit_m=${s.cupCandidateVsLiveHitXZDeltaMAtCommit?.let { fmt(it) } ?: "null"} " +
                 "thr_m=${s.cupEndAnchorCommitGateThresholdM?.let { fmt(it) } ?: "null"} " +
                 "strictFar=${s.cupEndAnchorCommitStrictFar} " +
@@ -627,6 +635,8 @@ object DistanceFieldTestLog {
         sb.append("\"cupEndAnchorCommitBypassSession\":").append(nb(snap.cupEndAnchorCommitBypassSession)).append(',')
         sb.append("\"cupLiveWorldFrameTimestampNs\":").append(snap.cupLiveWorldFrameTimestampNs?.toString() ?: "null").append(',')
         sb.append("\"cupLiveAlignAndGateSameFrame\":").append(snap.cupLiveAlignAndGateSameFrame).append(',')
+        sb.append("\"cupEndAnchorPositionSource\":").append(jsonStr(snap.cupEndAnchorPositionSource, esc)).append(',')
+        sb.append("\"cupEndAnchorVsLiveWorldXZM\":").append(n(snap.cupEndAnchorVsLiveWorldXZM)).append(',')
         sb.append("\"debugBannerShort\":\"").append(esc(snap.debugBannerShort)).append("\"")
         sb.append('}')
     }

@@ -32,6 +32,10 @@ data class FinalDistanceGuardResult(
  * 위험인데 anchor 무효면 live/plane 유지 + [anchorInvalidReason].
  */
 object FinalDistanceGuard {
+    /**
+     * @param cupEndAnchorFromLiveWorld 컵 END가 [lastLiveCupWorldForDistance] freeze와 동일 계열이면 true.
+     * plane 위험 + anchor 유효일 때 기본 [ANCHOR_FALLBACK] 대신 live/plane 후보 유지(라벨·배너 혼동 제거).
+     */
     fun apply(
         endLiveSnapshotMeters: Float,
         lastDisplayDistanceMeters: Float,
@@ -40,7 +44,8 @@ object FinalDistanceGuard {
         projectedCupPx: Float?,
         liveStable: Boolean?,
         finalFallbackUsed: Boolean,
-        ballCupPlaneAngleDeg: Float?
+        ballCupPlaneAngleDeg: Float?,
+        cupEndAnchorFromLiveWorld: Boolean = false
     ): FinalDistanceGuardResult {
         val livePlane =
             when {
@@ -105,9 +110,15 @@ object FinalDistanceGuard {
 
         when {
             planeUnsafe && anchorInvalid == null -> {
-                finalMeters = anchorMeters
-                sourceAfter = "ANCHOR_FALLBACK"
-                triggered = true
+                if (cupEndAnchorFromLiveWorld && livePlane.isFinite() && livePlane > 0f) {
+                    finalMeters = livePlane
+                    sourceAfter = beforeSource
+                    triggered = false
+                } else {
+                    finalMeters = anchorMeters
+                    sourceAfter = "ANCHOR_FALLBACK"
+                    triggered = true
+                }
                 anchorInvReason = null
             }
             planeUnsafe && anchorInvalid != null -> {

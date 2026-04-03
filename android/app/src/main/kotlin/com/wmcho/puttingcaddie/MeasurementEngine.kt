@@ -2,13 +2,14 @@ package com.wmcho.puttingcaddie
 
 import android.graphics.RectF
 import com.google.ar.core.Frame
+import com.google.ar.core.Session
 
 interface MeasurementEngine {
     fun setAxisMode(axisMode: V31StateMachine.AxisMode)
 
     fun onUiEvent(e: V31StateMachine.UiEvent, nowNs: Long)
 
-    fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long): V31StateMachine.UiModel
+    fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long, session: Session): V31StateMachine.UiModel
 
     fun reset()
 

@@ -2,6 +2,7 @@ package com.wmcho.puttingcaddie
 
 import android.graphics.RectF
 import com.google.ar.core.Frame
+import com.google.ar.core.Session
 
 class V31Engine(mapper: ScreenToViewMapper, debugLoggingEnabled: Boolean = false) : MeasurementEngine {
     private val sampler = V31HitSampler(mapper)
@@ -16,8 +17,8 @@ class V31Engine(mapper: ScreenToViewMapper, debugLoggingEnabled: Boolean = false
         sm.onUiEvent(e, nowNs)
     }
 
-    override fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long): V31StateMachine.UiModel {
-        return sm.tick(frame, roiScreen, nowNs)
+    override fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long, session: Session): V31StateMachine.UiModel {
+        return sm.tick(frame, roiScreen, nowNs, session)
     }
 
     override fun reset() {
