@@ -122,6 +122,29 @@ object DistanceFieldTestLog {
         val cupEndAnchorPositionSource: String?,
         /** 앵커 포즈 vs freeze 직전 live world XZ(m) */
         val cupEndAnchorVsLiveWorldXZM: Float?,
+        val distanceQualityTier: String?,
+        val cupConfirmDecision: String?,
+        val cupConfirmSource: String?,
+        val statisticalConfirmSupportCount: Int?,
+        val statisticalConfirmSpreadXZM: Float?,
+        val statisticalConfirmStdXZM: Float?,
+        val statisticalConfirmLowPxSalvage: Boolean?,
+        val captureBurstUsed: Boolean,
+        val captureBurstComputed: Boolean,
+        val captureBurstAcceptedFrames: Int?,
+        val captureBurstRejectedFrames: Int?,
+        val captureConfirmSpreadXZM: Float?,
+        val captureConfirmStdXZM: Float?,
+        val cupConfirmReason: String?,
+        val finalCupConfirmSource: String?,
+        val measureState: String?,
+        val measurementTransformVersion: Long?,
+        val detectorArFrameDeltaMs: Float?,
+        val confirmRejectedReason: String?,
+        val confirmActiveTransformVersion: Long?,
+        val autoZoomRequested: Boolean,
+        val autoZoomTargetRatio: Float?,
+        val autoZoomReason: String?,
         val debugBannerShort: String
     )
 
@@ -173,7 +196,10 @@ object DistanceFieldTestLog {
         val liveHitPairXZM = xzDeltaM(ui.ballLiveHitWorldAtFinish, ui.cupLiveHitWorldAtFinish)
         val cupSnapXZDeltaM = xzDeltaM(ui.cupAnchorHitWorldBeforeSnap, ui.cupAnchorPoseWorldAfterSnap)
         val endAnchorLowQualityFar =
-            ui.multiRayPlan == "FAR_3x3" &&
+            (
+                ui.multiRayPlan == "FAR_3x3" ||
+                    ui.multiRayPlan == "FAR_5x5"
+                ) &&
                 (
                     (ui.multiRayProjectedCupPx ?: 999f) < 50f ||
                         (ui.validSampleCount ?: 0) <= 9 ||
@@ -181,8 +207,10 @@ object DistanceFieldTestLog {
                     )
 
         val (cls, reason) =
-            if (isFail) {
+            if (isFail && !distanceOk) {
                 classifyFail(ui)
+            } else if (isFail && distanceOk) {
+                "degraded" to "DISTANCE_ONLY_SALVAGED_ON_FAIL"
             } else if (isResult) {
                 classifyResult(
                     ui = ui,
@@ -225,6 +253,16 @@ object DistanceFieldTestLog {
             }
             if (ui.cupEndAnchorCommitBypassSession == true) {
                 banner += " |CUP_END_BYPASS"
+            }
+            ui.cupConfirmSource?.let { banner += " |cupConfirm=$it" }
+            ui.distanceQualityTier?.let { banner += " |tier=$it" }
+            if (ui.captureBurstUsed) {
+                banner += " |burst=${ui.captureBurstAcceptedFrames ?: 0}/${ui.captureBurstRejectedFrames ?: 0}"
+            }
+            ui.measureState?.let { banner += " |mState=$it" }
+            ui.confirmRejectedReason?.let { banner += " |confirmReject=${it.take(24)}" }
+            if (ui.autoZoomRequested) {
+                banner += " |autoZoom=${ui.autoZoomTargetRatio?.let { String.format(Locale.US, "%.1f", it) } ?: "?"}"
             }
         }
 
@@ -270,7 +308,11 @@ object DistanceFieldTestLog {
             liveStable = ui.distanceLockLiveStable,
             liveOutlierCount = 0,
             liveRejectedReason = if (ui.distanceLockLiveStable == false) "sigma_or_range_gate" else null,
-            distanceBlockedByCupFix = cupFixSummary != "FIXED" && isFail,
+            distanceBlockedByCupFix =
+                cupFixSummary != "FIXED" &&
+                    isFail &&
+                    !distanceOk &&
+                    ((extras.liveAtFinishM == null) || !(extras.liveAtFinishM.isFinite() && extras.liveAtFinishM > 0f)),
             cupFailReason = ui.cupBlockedReason,
             distanceFailureStage = stage,
             sampleSpreadCupM = spread,
@@ -309,6 +351,29 @@ object DistanceFieldTestLog {
             cupLiveAlignAndGateSameFrame = ui.cupLiveWorldFrameTimestampNs != null,
             cupEndAnchorPositionSource = ui.cupEndAnchorPositionSource,
             cupEndAnchorVsLiveWorldXZM = ui.cupEndAnchorVsLiveWorldXZM,
+            distanceQualityTier = ui.distanceQualityTier,
+            cupConfirmDecision = ui.cupConfirmDecision,
+            cupConfirmSource = ui.cupConfirmSource,
+            statisticalConfirmSupportCount = ui.statisticalConfirmSupportCount,
+            statisticalConfirmSpreadXZM = ui.statisticalConfirmSpreadXZM,
+            statisticalConfirmStdXZM = ui.statisticalConfirmStdXZM,
+            statisticalConfirmLowPxSalvage = ui.statisticalConfirmLowPxSalvage,
+            captureBurstUsed = ui.captureBurstUsed,
+            captureBurstComputed = ui.captureBurstComputed,
+            captureBurstAcceptedFrames = ui.captureBurstAcceptedFrames,
+            captureBurstRejectedFrames = ui.captureBurstRejectedFrames,
+            captureConfirmSpreadXZM = ui.captureConfirmSpreadXZM,
+            captureConfirmStdXZM = ui.captureConfirmStdXZM,
+            cupConfirmReason = ui.cupConfirmReason,
+            finalCupConfirmSource = ui.finalCupConfirmSource,
+            measureState = ui.measureState,
+            measurementTransformVersion = ui.measurementTransformVersion,
+            detectorArFrameDeltaMs = ui.confirmGateMaxFrameDeltaMs,
+            confirmRejectedReason = ui.confirmRejectedReason,
+            confirmActiveTransformVersion = ui.confirmActiveTransformVersion,
+            autoZoomRequested = ui.autoZoomRequested,
+            autoZoomTargetRatio = ui.autoZoomTargetRatio,
+            autoZoomReason = ui.autoZoomReason,
             debugBannerShort = banner
         )
     }
@@ -493,6 +558,20 @@ object DistanceFieldTestLog {
         )
         Log.d(
             TAG,
+            "DISTANCE_BIAS_DEBUG " +
+                "liveAtFinishM=${s.liveAtFinishM?.let { fmt(it) } ?: "null"} " +
+                "anchorDistanceM=${s.anchorDistanceM?.let { fmt(it) } ?: "null"} " +
+                "cupMultiRayEstimatedDistanceM=${ui.multiRayEstimatedDistanceMeters?.let { fmt(it) } ?: "null"} " +
+                "cupHitDistanceAvgM=${ui.hitDistanceAvgMeters?.let { fmt(it) } ?: "null"} " +
+                "cameraToCupLiveM=${ui.bestHitDistanceFromCameraMeters?.let { fmt(it) } ?: "null"} " +
+                "ballToCupXZLiveM=${s.liveHitPairXZM?.let { fmt(it) } ?: "null"} " +
+                "ballToCupXZAnchorM=${s.anchorHorizontalM?.let { fmt(it) } ?: "null"} " +
+                "cupEndAnchorPositionSource=${s.cupEndAnchorPositionSource ?: "null"} " +
+                "projectedCupPx=${s.projectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null"} " +
+                "validSampleCount=${s.validSampleCount ?: "null"} centerFallbackUsed=${s.centerFallbackUsed}"
+        )
+        Log.d(
+            TAG,
             "DISTANCE_GUARD_SUMMARY livePlaneM=${s.finalDistanceLivePlaneM?.let { fmt(it) } ?: "null"} " +
                 "before=${s.finalDistanceSourceBeforeGuard ?: "null"} after=${s.finalDistanceSourceAfterGuard ?: "null"} " +
                 "triggered=${s.finalDistanceGuardTriggered} reasons=${s.finalDistanceGuardReasons ?: "none"} " +
@@ -520,6 +599,23 @@ object DistanceFieldTestLog {
                 "bypassSession=${s.cupEndAnchorCommitBypassSession} " +
                 "liveFrameNs=${s.cupLiveWorldFrameTimestampNs?.toString() ?: "null"} " +
                 "alignGateSameFrame=${s.cupLiveAlignAndGateSameFrame}"
+        )
+        Log.d(
+            TAG,
+            "MEASURE_ZOOM_GATE " +
+                "measureState=${s.measureState ?: "null"} " +
+                "transformVersion=${s.measurementTransformVersion?.toString() ?: "null"} " +
+                "confirmActiveTransformVersion=${s.confirmActiveTransformVersion?.toString() ?: "null"} " +
+                "detectorArDeltaMs=${s.detectorArFrameDeltaMs?.let { String.format(Locale.US, "%.2f", it) } ?: "null"} " +
+                "confirmRejectedReason=${s.confirmRejectedReason ?: "none"} " +
+                "projectedCupPx=${s.projectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null"}"
+        )
+        Log.d(
+            TAG,
+            "MEASURE_AUTO_ZOOM " +
+                "requested=${s.autoZoomRequested} " +
+                "targetRatio=${s.autoZoomTargetRatio?.let { String.format(Locale.US, "%.1f", it) } ?: "null"} " +
+                "reason=${s.autoZoomReason ?: "none"}"
         )
     }
 
@@ -637,6 +733,29 @@ object DistanceFieldTestLog {
         sb.append("\"cupLiveAlignAndGateSameFrame\":").append(snap.cupLiveAlignAndGateSameFrame).append(',')
         sb.append("\"cupEndAnchorPositionSource\":").append(jsonStr(snap.cupEndAnchorPositionSource, esc)).append(',')
         sb.append("\"cupEndAnchorVsLiveWorldXZM\":").append(n(snap.cupEndAnchorVsLiveWorldXZM)).append(',')
+        sb.append("\"distanceQualityTier\":").append(jsonStr(snap.distanceQualityTier, esc)).append(',')
+        sb.append("\"cupConfirmDecision\":").append(jsonStr(snap.cupConfirmDecision, esc)).append(',')
+        sb.append("\"cupConfirmSource\":").append(jsonStr(snap.cupConfirmSource, esc)).append(',')
+        sb.append("\"statisticalConfirmSupportCount\":").append(snap.statisticalConfirmSupportCount ?: "null").append(',')
+        sb.append("\"statisticalConfirmSpreadXZM\":").append(n(snap.statisticalConfirmSpreadXZM)).append(',')
+        sb.append("\"statisticalConfirmStdXZM\":").append(n(snap.statisticalConfirmStdXZM)).append(',')
+        sb.append("\"statisticalConfirmLowPxSalvage\":").append(nb(snap.statisticalConfirmLowPxSalvage)).append(',')
+        sb.append("\"captureBurstUsed\":").append(snap.captureBurstUsed).append(',')
+        sb.append("\"captureBurstComputed\":").append(snap.captureBurstComputed).append(',')
+        sb.append("\"captureBurstAcceptedFrames\":").append(snap.captureBurstAcceptedFrames ?: "null").append(',')
+        sb.append("\"captureBurstRejectedFrames\":").append(snap.captureBurstRejectedFrames ?: "null").append(',')
+        sb.append("\"captureConfirmSpreadXZM\":").append(n(snap.captureConfirmSpreadXZM)).append(',')
+        sb.append("\"captureConfirmStdXZM\":").append(n(snap.captureConfirmStdXZM)).append(',')
+        sb.append("\"cupConfirmReason\":").append(jsonStr(snap.cupConfirmReason, esc)).append(',')
+        sb.append("\"finalCupConfirmSource\":").append(jsonStr(snap.finalCupConfirmSource, esc)).append(',')
+        sb.append("\"measureState\":").append(jsonStr(snap.measureState, esc)).append(',')
+        sb.append("\"measurementTransformVersion\":").append(snap.measurementTransformVersion ?: "null").append(',')
+        sb.append("\"confirmActiveTransformVersion\":").append(snap.confirmActiveTransformVersion ?: "null").append(',')
+        sb.append("\"detectorArFrameDeltaMs\":").append(n(snap.detectorArFrameDeltaMs)).append(',')
+        sb.append("\"confirmRejectedReason\":").append(jsonStr(snap.confirmRejectedReason, esc)).append(',')
+        sb.append("\"autoZoomRequested\":").append(snap.autoZoomRequested).append(',')
+        sb.append("\"autoZoomTargetRatio\":").append(n(snap.autoZoomTargetRatio)).append(',')
+        sb.append("\"autoZoomReason\":").append(jsonStr(snap.autoZoomReason, esc)).append(',')
         sb.append("\"debugBannerShort\":\"").append(esc(snap.debugBannerShort)).append("\"")
         sb.append('}')
     }

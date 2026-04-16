@@ -103,8 +103,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    // 16KB page size 호환 (1.23.0+)
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.0")
 
     // Google Play In-App Review (used only on 2nd survey positive path)
     implementation("com.google.android.play:review:2.0.1")

@@ -8,9 +8,7 @@ import android.content.res.Configuration
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.PointF
-import android.graphics.Rect
 import android.graphics.Typeface
-import android.graphics.YuvImage
 import android.graphics.Matrix
 import android.content.res.ColorStateList
 import android.opengl.GLES20
@@ -25,7 +23,6 @@ import android.text.style.RelativeSizeSpan
 import android.text.style.ReplacementSpan
 import android.util.Log
 import android.view.LayoutInflater
-import android.view.HapticFeedbackConstants
 import android.view.View
 import android.animation.ObjectAnimator
 import android.animation.Animator
@@ -50,15 +47,14 @@ import com.google.ar.core.Config
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.android.play.core.review.ReviewManagerFactory
 import com.wmcho.puttingcaddie.slope.ExperimentalSlopeKpi
 import com.wmcho.puttingcaddie.slope.experimentalSlopeDiagnosticsToJson
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.math.atan
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -92,24 +88,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         private const val KEY_SURVEY2_CHOICE = "fb_survey2_choice"
         private const val KEY_REVIEW_REQUESTED = "fb_review_requested"
 
-        // YOLO cup assist: false = 완전 배제 (수동 조준만)
-        private const val CUP_YOLO_ENABLED = false
         // Zoom UI: false = 비활성화 (엔진 준비 전까지 숨김, 코드 유지)
         private const val ZOOM_UI_ENABLED = false
         // Pro 과금 UI: false = 비노출 (경사 신뢰성 확보 후 true로 전환)
         private const val SHOW_PRO_PAYWALL = false
-        // YOLO cup assist tuning (골프장=엄격 검출만 AUTO, 일반환경=수동 위주)
-        private const val CUP_YOLO_CONF_THRESHOLD = 0.72f
-        private const val CUP_YOLO_IOU_THRESHOLD = 0.45f
-        private const val CUP_YOLO_STABLE_FRAMES_ON = 4
-        private const val CUP_YOLO_STABLE_FRAMES_OFF = 2
-        private const val CUP_YOLO_CONSECUTIVE_MISS_TO_OFF = 2
-        private const val CUP_YOLO_MAX_AGE_NS = 900_000_000L   // 900ms
-        private const val CUP_YOLO_INFER_INTERVAL_NS = 200_000_000L  // 200ms
-        private const val CUP_YOLO_MIN_BOX_PX = 14
-        private const val CUP_YOLO_ROI_SHIFT_MAX_RATIO = 0.12f
-        private const val CUP_YOLO_SMOOTHING_ALPHA = 0.25f   // cur*(1-alpha) + new*alpha
-        private const val CUP_YOLO_FREEZE_AFTER_FINISH_NS = 1_200_000_000L  // 1.2s
     }
 
     private val TAG = "DistanceMeasurement"
@@ -130,7 +112,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private lateinit var txtInstruction: TextView
     private lateinit var txtNgHint: TextView
     private lateinit var txtCupAssist: TextView
-    private lateinit var dotYolo: View
     private lateinit var dotHit: View
     private lateinit var dotRoi: View
     private lateinit var btnStart: MaterialButton
@@ -158,26 +139,20 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private var ngStartAtNs: Long = 0L
     private var hasEverBeenOkSinceStart: Boolean = false
     private var cupAssistActivePrev: Boolean = false
-    private var lastCupAssistCueMs: Long = 0L
-    private var cupYoloDetector: CupYoloDetector? = null
-    private var cupYoloInitTried: Boolean = false
-    private var cupYoloLastInferNs: Long = 0L
-    private var cupYoloLastSeenNs: Long = 0L
-    private var cupYoloStableFrames: Int = 0
-    private var cupYoloLastCenter: PointF? = null
-    @Volatile private var cupYoloAssistActive: Boolean = false
-    @Volatile private var cupYoloFreezeUntilNs: Long = 0L  // Finish 직후 AUTO 정지 구간
-    @Volatile private var cupYoloConsecutiveMisses: Int = 0
-    private var cupYoloActivationCount: Int = 0
-    private var cupYoloDeactivationConsecutiveMissCount: Int = 0
-    private var cupYoloAssistActiveAtLock: Boolean = false
-    private var cupYoloStableFramesAtLock: Int = 0
 
     private val zoomSteps = floatArrayOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f)
     private var zoomStepIndex = 0
-    @Volatile private var cupDebugYoloPoint: PointF? = null
-    @Volatile private var cupDebugHitPoint: PointF? = null
-    @Volatile private var cupDebugRoiPoint: PointF? = null
+    private var lastAutoZoomApplyNs: Long = 0L
+    private val depthStateLogger = ChangeOnlyLogger<DepthState>(TAG)
+    private val trackingStateLogger = ChangeOnlyLogger<TrackingState>(TAG)
+    private val slopeStateLogger = ChangeOnlyLogger<String>(TAG)
+    private var lastDepthState: DepthState = DepthState.NO_FRAME
+    @Volatile private var depthSupportedRuntime: Boolean? = null
+    @Volatile private var depthModeRuntime: String? = null
+    @Volatile private var depthHasRawRuntime: Boolean = false
+    @Volatile private var depthHasNewRuntime: Boolean = false
+    @Volatile private var depthValidPointsRuntime: Int = 0
+    @Volatile private var depthSampledPointsRuntime: Int = 0
 
     private var unitMode: UnitMode = UnitMode.METER
     // 마지막 측정값(항상 meters 기준) - 단위 변경 시 즉시 재표시용
@@ -352,7 +327,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         txtInstruction = findViewById(R.id.txt_instruction)
         txtNgHint = findViewById(R.id.txtNgHint)
         txtCupAssist = findViewById(R.id.txtCupAssist)
-        dotYolo = findViewById(R.id.dotYolo)
         dotHit = findViewById(R.id.dotHit)
         dotRoi = findViewById(R.id.dotRoi)
         btnStart = findViewById(R.id.btn_start)
@@ -381,7 +355,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             pendingEngineEvents.add(V31StateMachine.UiEvent.StartPressed)
         }
         btnFinish.setOnClickListener {
-            cupYoloFreezeUntilNs = System.nanoTime() + CUP_YOLO_FREEZE_AFTER_FINISH_NS
             pendingEngineEvents.add(V31StateMachine.UiEvent.FinishPressed)
         }
         btnResultData.setOnClickListener { openGraphicResultScreen() }
@@ -440,7 +413,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         txtNgHint.alpha = 0f
         txtCupAssist.visibility = View.GONE
         txtCupAssist.alpha = 0f
-        dotYolo.visibility = View.GONE
         dotHit.visibility = View.GONE
         dotRoi.visibility = View.GONE
         txtZoomRatio.visibility = View.GONE
@@ -895,7 +867,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         val slopeNotMeasured = getString(R.string.slope_not_measured)
         val slopeText =
             if (!upDownAvailable) {
-                slopeNotMeasured
+                if (rawM > 0f) {
+                    getString(R.string.result_slope_unavailable_distance_ok)
+                } else {
+                    slopeNotMeasured
+                }
             } else {
                 val cm = vMeters!! * 100f
                 val absCm = kotlin.math.abs(cm)
@@ -954,6 +930,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
         val slopeValid = upDownAvailable
         val resultLevel = if (!slopeValid) "LEVEL_1" else "LEVEL_3"
+
+        if (rawM > 0f && !slopeValid) {
+            val sr = shared?.blockedReason ?: phase1?.blockedReason ?: "LOW_QUALITY_OR_FAR"
+            Log.i(
+                "DISTANCE_SLOPE_SEPARATION",
+                "distanceFixed=true slopeAvailable=false slopeBlockedReason=$sr resultLevel=$resultLevel"
+            )
+        }
 
         Log.d(
             "GRAPHIC_SLOPE",
@@ -1015,7 +999,82 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             append("\nguard=").append(ui.finalDistanceGuardTriggered)
             append(" ").append(ui.finalDistanceGuardReasons ?: "—")
             ui.finalDistanceAnchorInvalidReason?.let { append("\nanchorInvalid=").append(it) }
+            append("\nmeasureState=").append(ui.measureState ?: "—")
+            append(" v=").append(ui.measurementTransformVersion?.toString() ?: "—")
+            append("\nconfirmAccepted=").append(ui.confirmGateAccepted?.toString() ?: "—")
+            append(" reject=").append(ui.confirmRejectedReason ?: "—")
+            append("\nconfirmPx=").append(ui.confirmGateProjectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "—")
+            append(" cStd=").append(ui.confirmGateCenterStdPx?.let { String.format(Locale.US, "%.2f", it) } ?: "—")
+            append(" wSpread=").append(ui.confirmGateWorldSpreadM?.let { String.format(Locale.US, "%.3f", it) } ?: "—")
+            append(" fΔms=").append(ui.confirmGateMaxFrameDeltaMs?.let { String.format(Locale.US, "%.1f", it) } ?: "—")
+            append("\nS26 6m/9m checklist: ")
+            append("preview↔sensor aligned, version no-mix, ts mismatch visible, gate reasons visible")
         }
+    }
+
+    private fun buildDepthDebugLine(): String {
+        val supported = depthSupportedRuntime?.toString() ?: "null"
+        val mode = depthModeRuntime ?: "null"
+        val hasRaw = depthHasRawRuntime
+        val hasNew = depthHasNewRuntime
+        val valid = depthValidPointsRuntime
+        val sampled = depthSampledPointsRuntime
+        return "DEPTH s=$supported mode=$mode raw=$hasRaw new=$hasNew q=$valid/$sampled"
+    }
+
+    private fun resolveDepthState(
+        depthSupported: Boolean?,
+        depthMode: String?,
+        hasNewDepth: Boolean,
+        validDepthPoints: Int
+    ): DepthState {
+        if (depthSupported != true) return DepthState.UNSUPPORTED
+        if (depthMode != Config.DepthMode.AUTOMATIC.name) return DepthState.DISABLED
+        if (!hasNewDepth) return DepthState.NO_FRAME
+        return when {
+            validDepthPoints >= 300 -> DepthState.GOOD
+            validDepthPoints >= 100 -> DepthState.OK
+            else -> DepthState.LOW_QUALITY
+        }
+    }
+
+    private fun emitMeasureSummaryLog(ui: V31StateMachine.UiModel, finalFailReason: String) {
+        val distanceSource = ui.finalDistanceSourceAfterGuard ?: ui.finalDistanceSourceBeforeGuard ?: ui.liveSource ?: "UNKNOWN"
+        val cupFixSuccess = ui.cupWpState == "FIXED"
+        val slopeClass =
+            when (ui.slopeExposureState) {
+                "FINAL" -> "GOOD"
+                else -> if ((ui.slopeDebugInfo?.blockedReason ?: "").isNotBlank()) "BLOCKED" else "DEGRADED"
+            }
+        Log.i(
+            TAG,
+            "MEASURE_SUMMARY " +
+                "sessionId=${prefs().getString(KEY_TEST_SESSION_ID, "") ?: ""} " +
+                "distance=${String.format(Locale.US, "%.2f", ui.distanceMeters)} " +
+                "distanceSource=$distanceSource cupFixSuccess=$cupFixSuccess " +
+                "cupFixSource=${ui.cupWpState ?: "UNKNOWN"} " +
+                "px=${ui.multiRayProjectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null"} " +
+                "support=${ui.validSampleCount ?: -1} " +
+                "stdXz=${ui.statisticalConfirmStdXZM?.let { String.format(Locale.US, "%.3f", it) } ?: "null"} " +
+                "spreadXz=${ui.statisticalConfirmSpreadXZM?.let { String.format(Locale.US, "%.3f", it) } ?: "null"} " +
+                "sameFrameAlign=${ui.confirmGateAccepted == true} " +
+                "zoomUsed=${backgroundRenderer.getZoomLevel() > 1.0f} " +
+                "depthState=${lastDepthState.name} slopeClass=$slopeClass " +
+                "failReason=$finalFailReason"
+        )
+    }
+
+    private fun emitFailDetailLog(ui: V31StateMachine.UiModel) {
+        Log.i(
+            TAG,
+            "CUP_FIX_FAIL reason=${ui.failReasonCode ?: "unknown"} " +
+                "px=${ui.multiRayProjectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null"} " +
+                "support=${ui.validSampleCount ?: -1} " +
+                "stdXz=${ui.statisticalConfirmStdXZM?.let { String.format(Locale.US, "%.3f", it) } ?: "null"} " +
+                "spreadXz=${ui.statisticalConfirmSpreadXZM?.let { String.format(Locale.US, "%.3f", it) } ?: "null"} " +
+                "sameFrameAlign=${ui.confirmGateAccepted == true} " +
+                "zoomTransient=${ui.failDetailCode == "zoom_transient"}"
+        )
     }
 
     /** 상하경사 표시: hv=(horizontal, vertical)미터. slope % = (v/h)*100, v>0=오르막. */
@@ -1099,14 +1158,19 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 config.focusMode = Config.FocusMode.AUTO
                 // v3.1 SessionConfig policy
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                val depthSupported = currentSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+                if (DebugLogFlags.LOG_DEPTH_INFO) {
+                    Log.i(TAG, "DEPTH_CAPABILITY depthSupported=$depthSupported")
+                }
+                depthSupportedRuntime = depthSupported
                 config.depthMode =
-                    if (currentSession.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                        Config.DepthMode.AUTOMATIC
-                    } else {
-                        Config.DepthMode.DISABLED
-                    }
+                    if (depthSupported) Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
                 config.instantPlacementMode = Config.InstantPlacementMode.DISABLED
                 currentSession.configure(config)
+                if (DebugLogFlags.LOG_DEPTH_INFO) {
+                    Log.i(TAG, "DEPTH_CONFIG depthMode=${config.depthMode.name}")
+                }
+                depthModeRuntime = config.depthMode.name
 
                 runOnUiThread {
                     // NOTE:
@@ -1343,6 +1407,70 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
             val trackingState = frame.camera.trackingState
             latestTrackingState = trackingState
+            if (DebugLogFlags.LOG_CUP_DEBUG || DebugLogFlags.LOG_SLOPE_DEBUG) {
+                trackingStateLogger.logIfChanged(trackingState) {
+                    "TRACKING_STATE_CHANGED to=${trackingState.name}"
+                }
+            }
+            var hasRawDepth = false
+            var rawDepthTimestamp: Long? = null
+            var hasNewDepth = false
+            var validDepthPoints = 0
+            var sampledPointCount = 0
+            try {
+                frame.acquireRawDepthImage16Bits().use { depthImage ->
+                    hasRawDepth = true
+                    rawDepthTimestamp = depthImage.timestamp
+                    hasNewDepth = frame.timestamp == depthImage.timestamp
+                }
+            } catch (_: Exception) {
+                hasRawDepth = false
+            }
+            if (hasRawDepth) {
+                try {
+                    frame.acquireRawDepthConfidenceImage().use { confImage ->
+                        val plane = confImage.planes.firstOrNull()
+                        val buf = plane?.buffer
+                        if (buf != null) {
+                            val total = confImage.width * confImage.height
+                            val targetSamples = minOf(1000, total)
+                            val step = (total / targetSamples).coerceAtLeast(1)
+                            var idx = 0
+                            while (idx < total && sampledPointCount < targetSamples) {
+                                val c = buf.get(idx).toInt() and 0xFF
+                                if (c > 180) validDepthPoints++
+                                sampledPointCount++
+                                idx += step
+                            }
+                        }
+                    }
+                } catch (_: Exception) {
+                    validDepthPoints = 0
+                    sampledPointCount = 0
+                }
+            }
+            depthHasRawRuntime = hasRawDepth
+            depthHasNewRuntime = hasNewDepth
+            depthValidPointsRuntime = validDepthPoints
+            depthSampledPointsRuntime = sampledPointCount
+            val depthState = resolveDepthState(depthSupportedRuntime, depthModeRuntime, hasNewDepth, validDepthPoints)
+            lastDepthState = depthState
+            if (DebugLogFlags.LOG_DEPTH_DEBUG) {
+                depthStateLogger.logIfChanged(depthState) {
+                    "DEPTH_STATE_CHANGED to=${depthState.name} validDepthPoints=$validDepthPoints"
+                }
+            }
+            if (DebugLogFlags.LOG_DEPTH_TRACE) {
+                Log.d(
+                    TAG,
+                    "DEPTH_FRAME_STATUS hasRawDepth=$hasRawDepth frameTimestamp=${frame.timestamp} rawDepthTimestamp=${rawDepthTimestamp ?: -1L}"
+                )
+                Log.d(TAG, "DEPTH_NEW_FRAME hasNewDepth=$hasNewDepth")
+                Log.d(
+                    TAG,
+                    "DEPTH_QUALITY validDepthPoints=$validDepthPoints sampledPointCount=$sampledPointCount"
+                )
+            }
 
             // GREENIQ UI: instruction text is driven by the engine state (applyUiModel).
 
@@ -1380,14 +1508,13 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     val vf = viewFinder
                     if (vf != null) {
                         val roi = vf.getFinderRectOnScreen(android.graphics.RectF())
-                        val roiForEngine = maybeApplyCupYoloAssist(frame, roi, nowNs)
-                        if (isDebuggableBuild() && nowNs - lastZoomDebugLogNs >= 300_000_000L) {
+                        if (DebugLogFlags.LOG_ZOOM_TRACE && isDebuggableBuild() && nowNs - lastZoomDebugLogNs >= 300_000_000L) {
                             lastZoomDebugLogNs = nowNs
                             val intr = frame.camera.imageIntrinsics
                             val f = intr.focalLength
                             val pp = intr.principalPoint
-                            val centerSx = roiForEngine.centerX()
-                            val centerSy = roiForEngine.centerY()
+                            val centerSx = roi.centerX()
+                            val centerSy = roi.centerY()
                             val localRaw = mapper?.screenToLocal(PointF(centerSx, centerSy))
                             val localUnzoom = localRaw?.let { mapper?.unzoomLocal(it) }
                             Log.d(
@@ -1400,10 +1527,33 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                                     "centerLocalUnzoom=(${String.format(Locale.US, "%.1f", localUnzoom?.x ?: 0f)},${String.format(Locale.US, "%.1f", localUnzoom?.y ?: 0f)})"
                             )
                         }
-                        val ui = engine.onFrame(frame, roiForEngine, nowNs, currentSession)
+                        val ui = engine.onFrame(frame, roi, nowNs, currentSession)
+                        if (DebugLogFlags.LOG_SLOPE_TRACE) {
+                            Log.d(
+                                TAG,
+                                "SLOPE_PIPELINE_ENTER trackingState=${trackingState.name} hasNewDepth=$hasNewDepth validDepthPoints=$validDepthPoints"
+                            )
+                            val slopeInfo = ui.slopeDebugInfo
+                            val forwardSlopeDeg =
+                                slopeInfo?.forwardPct?.let { Math.toDegrees(atan((it / 100f).toDouble())).toFloat() }
+                            val lateralSlopeDeg =
+                                slopeInfo?.lateralPct?.let { Math.toDegrees(atan((it / 100f).toDouble())).toFloat() }
+                            Log.d(
+                                TAG,
+                                "SLOPE_RESULT forwardSlopeDeg=${forwardSlopeDeg ?: Float.NaN} " +
+                                    "lateralSlopeDeg=${lateralSlopeDeg ?: Float.NaN} " +
+                                    "slopeReason=${slopeInfo?.blockedReason ?: "none"}"
+                            )
+                        }
+                        if (DebugLogFlags.LOG_SLOPE_DEBUG) {
+                            val slopeState = "${ui.slopeExposureState ?: "HIDDEN"}:${ui.slopeDebugInfo?.blockedReason ?: "none"}"
+                            slopeStateLogger.logIfChanged(slopeState) {
+                                "SLOPE_STATE_CHANGED state=$slopeState"
+                            }
+                        }
                         if (shadowLegacy && engine !== legacyEngine) {
                             legacyEngine?.setAxisMode(axis)
-                            legacyEngine?.onFrame(frame, roiForEngine, nowNs, currentSession) // compute only; ignore result
+                            legacyEngine?.onFrame(frame, roi, nowNs, currentSession) // compute only; ignore result
                         }
                         runOnUiThread { applyUiModel(ui) }
                     }
@@ -1467,224 +1617,13 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         previewGlView?.let {
             findViewById<android.view.ViewGroup>(android.R.id.content).removeView(it)
         }
-        runCatching { cupYoloDetector?.close() }
-        cupYoloDetector = null
         billingManager?.endConnection()
         billingManager = null
         session?.close()
     }
 
-    private fun isCupPhaseForYolo(): Boolean {
-        return when (lastEngineState) {
-            V31StateMachine.State.AIM_END,
-            V31StateMachine.State.STABILIZING_END,
-            V31StateMachine.State.END_LOCKED -> true
-            else -> false
-        }
-    }
-
-    private fun maybeApplyCupYoloAssist(frame: com.google.ar.core.Frame, roi: android.graphics.RectF, nowNs: Long): android.graphics.RectF {
-        if (!CUP_YOLO_ENABLED) {
-            cupYoloAssistActive = false
-            cupYoloStableFrames = 0
-            cupYoloConsecutiveMisses = 0
-            cupDebugYoloPoint = null
-            cupDebugHitPoint = null
-            cupDebugRoiPoint = null
-            return roi
-        }
-        if (!isCupPhaseForYolo()) {
-            cupYoloAssistActive = false
-            cupYoloStableFrames = 0
-            cupYoloConsecutiveMisses = 0
-            cupDebugYoloPoint = null
-            cupDebugHitPoint = null
-            cupDebugRoiPoint = null
-            return roi
-        }
-        cupDebugRoiPoint = PointF(roi.centerX(), roi.centerY())
-
-        // Finish 직후 1.2초 동안 AUTO 정지 → 확정 순간은 수동 기준으로 유지
-        if (nowNs < cupYoloFreezeUntilNs) {
-            cupYoloAssistActive = false
-            cupDebugHitPoint = PointF(roi.centerX(), roi.centerY())
-            return roi
-        }
-
-        val detector =
-            if (cupYoloDetector != null) {
-                cupYoloDetector
-            } else {
-                if (!cupYoloInitTried) {
-                    cupYoloInitTried = true
-                    cupYoloDetector = runCatching { CupYoloDetector(this) }.getOrNull()
-                }
-                cupYoloDetector
-            } ?: return roi
-
-        // YOLO inference throttle: keep CPU/thermal stable.
-        if (nowNs - cupYoloLastInferNs >= CUP_YOLO_INFER_INTERVAL_NS) {
-            cupYoloLastInferNs = nowNs
-            val gl = previewGlView
-            val targetW = gl?.width ?: 0
-            val targetH = gl?.height ?: 0
-            val bmp = frameToCanonicalBitmap(frame, targetW, targetH)
-            if (bmp != null) {
-                val detections = detector.detectCup(
-                    bmp,
-                    confThreshold = CUP_YOLO_CONF_THRESHOLD,
-                    iouThreshold = CUP_YOLO_IOU_THRESHOLD
-                )
-                val best =
-                    detections
-                        .filter {
-                            it.rect.width() >= CUP_YOLO_MIN_BOX_PX &&
-                                it.rect.height() >= CUP_YOLO_MIN_BOX_PX
-                        }
-                        .maxByOrNull { it.score * (it.rect.width() * it.rect.height()) }
-                if (best != null) {
-                    val nx = (best.rect.centerX() / bmp.width.toFloat()).coerceIn(0f, 1f)
-                    val ny = (best.rect.centerY() / bmp.height.toFloat()).coerceIn(0f, 1f)
-                    val gl = previewGlView
-                    val glLoc = IntArray(2)
-                    gl?.getLocationOnScreen(glLoc)
-                    val glW = gl?.width?.toFloat()?.takeIf { it > 1f }
-                    val glH = gl?.height?.toFloat()?.takeIf { it > 1f }
-                    val sx =
-                        if (glW != null) {
-                            glLoc[0] + (nx * glW)
-                        } else {
-                            roi.left + (roi.width() * nx)
-                        }
-                    val sy =
-                        if (glH != null) {
-                            glLoc[1] + (ny * glH)
-                        } else {
-                            roi.top + (roi.height() * ny)
-                        }
-                    cupDebugYoloPoint = PointF(sx, sy)
-                    val cur = cupYoloLastCenter
-                    val alpha = CUP_YOLO_SMOOTHING_ALPHA
-                    cupYoloLastCenter =
-                        if (cur == null) {
-                            PointF(sx, sy)
-                        } else {
-                            PointF((cur.x * (1f - alpha)) + (sx * alpha), (cur.y * (1f - alpha)) + (sy * alpha))
-                        }
-                    cupYoloStableFrames = (cupYoloStableFrames + 1).coerceAtMost(20)
-                    cupYoloLastSeenNs = nowNs
-                    cupYoloConsecutiveMisses = 0
-                } else {
-                    cupDebugYoloPoint = null
-                    cupYoloConsecutiveMisses = (cupYoloConsecutiveMisses + 1).coerceAtMost(10)
-                    if (cupYoloConsecutiveMisses >= CUP_YOLO_CONSECUTIVE_MISS_TO_OFF) {
-                        cupYoloStableFrames = 0
-                        cupYoloDeactivationConsecutiveMissCount++
-                    } else {
-                        cupYoloStableFrames = (cupYoloStableFrames - 1).coerceAtLeast(0)
-                    }
-                }
-                bmp.recycle()
-            }
-        }
-
-        val ageOk = (nowNs - cupYoloLastSeenNs <= CUP_YOLO_MAX_AGE_NS)
-        val onThreshold = cupYoloStableFrames >= CUP_YOLO_STABLE_FRAMES_ON
-        val offThreshold = cupYoloStableFrames >= CUP_YOLO_STABLE_FRAMES_OFF
-        val active = ageOk && (onThreshold || (cupYoloAssistActive && offThreshold))
-        cupYoloAssistActive = active
-        if (!active) {
-            cupDebugHitPoint = PointF(roi.centerX(), roi.centerY())
-            return roi
-        }
-
-        val target = cupYoloLastCenter ?: return roi
-        val maxShiftX = roi.width() * CUP_YOLO_ROI_SHIFT_MAX_RATIO
-        val maxShiftY = roi.height() * CUP_YOLO_ROI_SHIFT_MAX_RATIO
-        val dx = (target.x - roi.centerX()).coerceIn(-maxShiftX, maxShiftX)
-        val dy = (target.y - roi.centerY()).coerceIn(-maxShiftY, maxShiftY)
-        val shifted = android.graphics.RectF(roi.left + dx, roi.top + dy, roi.right + dx, roi.bottom + dy)
-        cupDebugHitPoint = PointF(shifted.centerX(), shifted.centerY())
-        return shifted
-    }
-
-    private fun frameToBitmap(frame: com.google.ar.core.Frame): android.graphics.Bitmap? {
-        val image = try {
-            frame.acquireCameraImage()
-        } catch (_: NotYetAvailableException) {
-            return null
-        } catch (_: Exception) {
-            return null
-        }
-        return try {
-            val planes = image.planes
-            if (planes.size < 3) return null
-            val yBuffer = planes[0].buffer
-            val uBuffer = planes[1].buffer
-            val vBuffer = planes[2].buffer
-            val ySize = yBuffer.remaining()
-            val uSize = uBuffer.remaining()
-            val vSize = vBuffer.remaining()
-            val nv21 = ByteArray(ySize + uSize + vSize)
-            yBuffer.get(nv21, 0, ySize)
-            vBuffer.get(nv21, ySize, vSize)
-            uBuffer.get(nv21, ySize + vSize, uSize)
-            val yuv = YuvImage(nv21, android.graphics.ImageFormat.NV21, image.width, image.height, null)
-            val out = ByteArrayOutputStream()
-            yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
-            val bytes = out.toByteArray()
-            out.close()
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (_: Exception) {
-            null
-        } finally {
-            image.close()
-        }
-    }
-
-    private fun frameToCanonicalBitmap(frame: com.google.ar.core.Frame, targetW: Int, targetH: Int): android.graphics.Bitmap? {
-        val raw = frameToBitmap(frame) ?: return null
-        val adjusted = try {
-            val cx = raw.width * 0.5f
-            val cy = raw.height * 0.5f
-            val m = Matrix()
-            // Keep canonical orientation aligned with preview texture adjustment.
-            if (screenMirrorH || screenMirrorV) {
-                m.postScale(if (screenMirrorH) -1f else 1f, if (screenMirrorV) -1f else 1f, cx, cy)
-            }
-            if (screenRotDeg != 0f) {
-                m.postRotate(-screenRotDeg, cx, cy)
-            }
-            val transformed = android.graphics.Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true)
-            if (transformed !== raw) raw.recycle()
-            transformed
-        } catch (_: Exception) {
-            raw
-        }
-
-        // Option A: enforce View aspect ratio via center-crop to keep YOLO/View coordinates 1:1.
-        if (targetW <= 1 || targetH <= 1) return adjusted
-        val srcAspect = adjusted.width.toFloat() / adjusted.height.toFloat()
-        val dstAspect = targetW.toFloat() / targetH.toFloat()
-        val cropped =
-            if (kotlin.math.abs(srcAspect - dstAspect) < 0.0001f) {
-                adjusted
-            } else {
-                val (cropW, cropH) =
-                    if (srcAspect > dstAspect) {
-                        Pair((adjusted.height * dstAspect).toInt().coerceAtLeast(1), adjusted.height)
-                    } else {
-                        Pair(adjusted.width, (adjusted.width / dstAspect).toInt().coerceAtLeast(1))
-                    }
-                val left = ((adjusted.width - cropW) / 2).coerceAtLeast(0)
-                val top = ((adjusted.height - cropH) / 2).coerceAtLeast(0)
-                runCatching { android.graphics.Bitmap.createBitmap(adjusted, left, top, cropW, cropH) }.getOrNull() ?: adjusted
-            }
-        if (cropped !== adjusted) adjusted.recycle()
-        return cropped
-    }
-
     private fun applyUiModel(ui: V31StateMachine.UiModel) {
+        maybeApplyAutoZoom(ui)
         // Track lock timings / result transitions for feedback logging.
         val nowMs = SystemClock.elapsedRealtime()
         if (ui.engineState == V31StateMachine.State.STABILIZING_START &&
@@ -1727,6 +1666,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             val distExtras = buildDistanceExtras()
             DistanceFieldTestLog.emitLogcat(ui, distExtras)
             appendMeasurementLog(buildMeasurementLogJson(ui, distExtras))
+            emitMeasureSummaryLog(ui, "NONE")
             onResultReached(ui, distExtras)
         }
         if (ui.engineState == V31StateMachine.State.FAIL &&
@@ -1735,6 +1675,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             val distExtras = buildDistanceExtras()
             DistanceFieldTestLog.emitLogcat(ui, distExtras)
             appendMeasurementLog(buildMeasurementLogJson(ui, distExtras))
+            emitMeasureSummaryLog(ui, ui.failReasonCode ?: "unknown")
+            emitFailDetailLog(ui)
         }
 
         // Keep a copy of the last non-final distance for logging (live_at_finish)
@@ -1810,6 +1752,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     "cannot_retry" -> getString(R.string.debug_measure_again)
                     "projected_px_small" -> getString(R.string.debug_cup_center)
                     "valid_hits_insufficient" -> getString(R.string.debug_cup_searching)
+                    "center_fallback_used" -> getString(R.string.debug_cup_searching)
+                    "transform_unstable" -> getString(R.string.debug_cup_searching)
+                    "stable_frames_insufficient" -> getString(R.string.debug_cup_searching)
+                    "measuring_preparing" -> getString(R.string.debug_cup_searching)
                     else -> getString(R.string.debug_cup_searching)
                 }
             isDebuggableBuild() && ui.engineState == V31StateMachine.State.RESULT &&
@@ -1818,40 +1764,55 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             !ui.startEnabled && ballHintResId != null &&
                 (ui.engineState == V31StateMachine.State.IDLE || ui.engineState == V31StateMachine.State.AIM_START) ->
                 getString(ballHintResId)
-            else -> when (ui.engineState) {
-                V31StateMachine.State.IDLE,
-                V31StateMachine.State.AIM_START,
-                V31StateMachine.State.STABILIZING_START,
-                V31StateMachine.State.START_LOCKED -> getString(R.string.greeniq_hint_ball)
-
-                V31StateMachine.State.FAIL ->
-                    if (ui.failDetailCode == "CUP_LOW_VALID_500MS" || ui.failDetailCode == "CUP_PENDING_TIMEOUT_3S") {
-                        getString(R.string.greeniq_hint_cup_realign)
-                    } else {
-                        getString(R.string.greeniq_hint_ball)
+            else -> when {
+                ui.engineState == V31StateMachine.State.STABILIZING_END && ui.cupCommitBlockedReason != null ->
+                    when (ui.cupCommitBlockedReason) {
+                        "LOW_PROJECTED_CUP_PX_NO_SALVAGE" -> getString(R.string.cup_commit_blocked_low_px)
+                        else -> getString(R.string.greeniq_hint_cup_realign)
                     }
+                else -> when (ui.engineState) {
+                    V31StateMachine.State.IDLE,
+                    V31StateMachine.State.AIM_START,
+                    V31StateMachine.State.STABILIZING_START,
+                    V31StateMachine.State.START_LOCKED -> getString(R.string.greeniq_hint_ball)
 
-                V31StateMachine.State.AIM_END,
-                V31StateMachine.State.STABILIZING_END ->
-                    if (cupTooSmall) getString(R.string.greeniq_hint_cup_realign)
-                    else getString(R.string.greeniq_hint_cup)
-
-                V31StateMachine.State.END_LOCKED -> getString(R.string.greeniq_hint_cup)
-
-                V31StateMachine.State.RESULT ->
-                    if (isDebuggableBuild()) {
-                        val snap =
-                            lastDistanceFeedbackSnapshot
-                                ?: DistanceFieldTestLog.feedbackSnapshot(ui, buildDistanceExtras())
-                        buildString {
-                            append(getString(R.string.greeniq_hint_done)).append('\n')
-                            append(snap.debugBannerShort).append('\n')
-                            append(buildDistanceGuardDebugLines(ui))
+                    V31StateMachine.State.FAIL ->
+                        if (ui.failDetailCode == "CUP_LOW_VALID_500MS" || ui.failDetailCode == "CUP_PENDING_TIMEOUT_3S") {
+                            getString(R.string.greeniq_hint_cup_realign)
+                        } else {
+                            getString(R.string.greeniq_hint_ball)
                         }
-                    } else {
-                        getString(R.string.greeniq_hint_done)
-                    }
+
+                    V31StateMachine.State.AIM_END,
+                    V31StateMachine.State.STABILIZING_END ->
+                        if (cupTooSmall) getString(R.string.greeniq_hint_cup_realign)
+                        else getString(R.string.greeniq_hint_cup)
+
+                    V31StateMachine.State.END_LOCKED -> getString(R.string.greeniq_hint_cup)
+
+                    V31StateMachine.State.RESULT ->
+                        if (isDebuggableBuild()) {
+                            val snap =
+                                lastDistanceFeedbackSnapshot
+                                    ?: DistanceFieldTestLog.feedbackSnapshot(ui, buildDistanceExtras())
+                            buildString {
+                                append(getString(R.string.greeniq_hint_done)).append('\n')
+                                append(snap.debugBannerShort).append('\n')
+                                append(buildDistanceGuardDebugLines(ui))
+                            }
+                        } else {
+                            val done = getString(R.string.greeniq_hint_done)
+                            if (ui.distanceQualityTier == "LOW_QUALITY_DISTANCE_ONLY") {
+                                "$done\n${getString(R.string.greeniq_result_low_quality_note)}"
+                            } else {
+                                done
+                            }
+                        }
+                }
             }
+        }
+        if (isDebuggableBuild()) {
+            txtInstruction.text = "${txtInstruction.text}\n${buildDepthDebugLine()}"
         }
 
         btnStart.isEnabled = ui.startEnabled
@@ -1937,8 +1898,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         if (ui.engineState == V31StateMachine.State.END_LOCKED && ui.flashLock) {
             showCheckFeedback()
             animateLockPulse(txtDistance)
-            cupYoloAssistActiveAtLock = cupYoloAssistActive
-            cupYoloStableFramesAtLock = cupYoloStableFrames
             // Capture CUP fix stats for feedback log.
             cupValidHits = ui.sampleValidHits
             cupTotalPoints = ui.sampleTotalPoints
@@ -2024,16 +1983,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             lastNonFinalLiveSource = null
             lastNonFinalLiveRawMeters = null
             lastNonFinalCenterHitValid = null
-            cupYoloAssistActive = false
-            cupYoloStableFrames = 0
-            cupYoloLastCenter = null
-            cupYoloLastSeenNs = 0L
-            cupYoloFreezeUntilNs = 0L
-            cupYoloConsecutiveMisses = 0
-            cupYoloActivationCount = 0
-            cupYoloDeactivationConsecutiveMissCount = 0
-            cupYoloAssistActiveAtLock = false
-            cupYoloStableFramesAtLock = 0
             cupAssistActivePrev = false
         }
 
@@ -2079,18 +2028,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 else -> ViewFinderView.QualityState.NONE
             }
 
-        val cupAssistScope =
-            CUP_YOLO_ENABLED && (
-                inEndStates ||
-                    ui.engineState == V31StateMachine.State.END_LOCKED
-            )
-        val cupAssistActive = cupAssistScope && cupYoloAssistActive
+        // Cup YOLO assist removed (memory); cup phase is always manual aim from UI perspective.
+        val cupAssistScope = false
+        val cupAssistActive = false
         updateCupAssistUi(cupAssistScope, cupAssistActive)
-        updateCupDebugDots(cupAssistScope)
-        if (cupAssistActive && !cupAssistActivePrev) {
-            cupYoloActivationCount++
-            runCupAssistAcquiredCue()
-        }
+        updateCupDebugDots(false)
         cupAssistActivePrev = cupAssistActive
 
         val inCupPhase =
@@ -2166,6 +2108,44 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         lastIsMeasuringFlow = ui.isMeasuringFlow
     }
 
+    private fun maybeApplyAutoZoom(ui: V31StateMachine.UiModel) {
+        if (!ui.autoZoomRequested) return
+        val target = ui.autoZoomTargetRatio ?: return
+        val nowNs = System.nanoTime()
+        if (lastAutoZoomApplyNs > 0L && nowNs - lastAutoZoomApplyNs < 200_000_000L) return
+
+        val current = zoomSteps.getOrNull(zoomStepIndex) ?: 1.0f
+        if (current + 0.01f >= target) return
+
+        val cappedTarget = target.coerceAtMost(2.5f)
+        val nextIndex =
+            when {
+                current < 1.5f && cappedTarget >= 1.5f -> 1
+                current < 2.0f && cappedTarget >= 2.0f -> 2
+                current < 2.5f && cappedTarget >= 2.5f -> 3
+                else -> zoomStepIndex
+            }
+        if (nextIndex <= zoomStepIndex) return
+
+        zoomStepIndex = nextIndex
+        val z = zoomSteps[zoomStepIndex]
+        backgroundRenderer.setZoomLevel(z)
+        mapper?.zoomLevel = z
+        txtZoomRatio.text = when (z) {
+            1.0f -> "1.0x"
+            1.5f -> "1.5x"
+            2.0f -> "2.0x"
+            2.5f -> "2.5x"
+            3.0f -> "3.0x"
+            else -> "%.1fx".format(Locale.US, z)
+        }
+        lastAutoZoomApplyNs = nowNs
+        Log.i(
+            "MEASUREMENT_AUTO_ZOOM",
+            "autoZoomApplied=true target=$target applied=$z reason=${ui.autoZoomReason ?: "unknown"}"
+        )
+    }
+
     private fun showNgHint(show: Boolean) {
         if (show) {
             if (txtNgHint.visibility != View.VISIBLE) {
@@ -2216,47 +2196,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
     }
 
-    private fun runCupAssistAcquiredCue() {
-        val nowMs = SystemClock.elapsedRealtime()
-        if (nowMs - lastCupAssistCueMs < 1200L) return
-        lastCupAssistCueMs = nowMs
-
-        txtCupAssist.animate().cancel()
-        txtCupAssist.text = getString(R.string.cup_auto_detected)
-        txtCupAssist.setBackgroundResource(R.drawable.bg_cup_assist_active)
-        txtCupAssist.alpha = 1f
-        txtCupAssist.scaleX = 1f
-        txtCupAssist.scaleY = 1f
-        txtCupAssist.animate()
-            .scaleX(1.08f)
-            .scaleY(1.08f)
-            .setDuration(90L)
-            .withEndAction {
-                txtCupAssist.animate()
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setDuration(120L)
-                    .withEndAction {
-                        if (txtCupAssist.visibility == View.VISIBLE) {
-                            txtCupAssist.text = getString(R.string.cup_auto_active_short)
-                        }
-                    }
-                    .start()
-            }
-            .start()
-        txtCupAssist.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-    }
-
     private fun updateCupDebugDots(show: Boolean) {
         if (!show) {
-            dotYolo.visibility = View.GONE
             dotHit.visibility = View.GONE
             dotRoi.visibility = View.GONE
             return
         }
-        placeDebugDot(dotRoi, cupDebugRoiPoint, Color.WHITE)
-        placeDebugDot(dotYolo, cupDebugYoloPoint, Color.parseColor("#F44336"))
-        placeDebugDot(dotHit, cupDebugHitPoint, Color.parseColor("#18A558"))
+        dotHit.visibility = View.GONE
+        dotRoi.visibility = View.GONE
     }
 
     private fun placeDebugDot(view: View, point: PointF?, color: Int) {
@@ -2632,6 +2579,20 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"timestamp_utc\":\"").append(escJson(tsUtcIso)).append("\",")
         sb.append("\"type\":\"MEASUREMENT\",")
         sb.append("\"appVersion\":\"").append(escJson(appVersionName())).append("\",")
+        sb.append("\"depthDiag\":{")
+        sb.append("\"depthSupported\":").append(depthSupportedRuntime?.toString() ?: "null").append(',')
+        sb.append("\"depthMode\":")
+        if (depthModeRuntime == null) {
+            sb.append("null")
+        } else {
+            sb.append("\"").append(escJson(depthModeRuntime!!)).append("\"")
+        }
+        sb.append(',')
+        sb.append("\"hasRawDepth\":").append(if (depthHasRawRuntime) "true" else "false").append(',')
+        sb.append("\"hasNewDepth\":").append(if (depthHasNewRuntime) "true" else "false").append(',')
+        sb.append("\"validDepthPoints\":").append(depthValidPointsRuntime).append(',')
+        sb.append("\"sampledPointCount\":").append(depthSampledPointsRuntime)
+        sb.append("},")
         sb.append("\"deviceModel\":\"").append(escJson(android.os.Build.MODEL ?: "")).append("\",")
         sb.append("\"distanceGroup\":\"").append(escJson(distanceGroup)).append("\",")
         sb.append("\"groundTruth_m\":").append(String.format(Locale.US, "%.3f", groundTruth)).append(",")
@@ -2717,15 +2678,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"multiRayEstimatedDistance_m\":").append(String.format(Locale.US, "%.3f", cupMultiRayEstimatedDistanceMeters ?: 0f)).append(",")
         sb.append("\"multiRayProjectedCupPx\":").append(String.format(Locale.US, "%.1f", cupMultiRayProjectedCupPx ?: 0f)).append(",")
         sb.append("\"multiRayCenterFallbackUsed\":").append(if (cupMultiRayCenterFallbackUsed == true) "true" else "false")
-        sb.append(",\"yolo\":{")
-        sb.append("\"assistActiveAtLock\":").append(cupYoloAssistActiveAtLock).append(",")
-        sb.append("\"stableFramesAtLock\":").append(cupYoloStableFramesAtLock).append(",")
-        sb.append("\"activationCount\":").append(cupYoloActivationCount).append(",")
-        sb.append("\"deactivationConsecutiveMissCount\":").append(cupYoloDeactivationConsecutiveMissCount).append(",")
-        sb.append("\"confThreshold\":").append(String.format(Locale.US, "%.2f", CUP_YOLO_CONF_THRESHOLD)).append(",")
-        sb.append("\"stableFramesOn\":").append(CUP_YOLO_STABLE_FRAMES_ON).append(",")
-        sb.append("\"consecutiveMissToOff\":").append(CUP_YOLO_CONSECUTIVE_MISS_TO_OFF)
-        sb.append("}")
+        sb.append(",\"yolo\":{\"removed\":true}")
 
         // Always-on diagnostics (use UiModel values directly; do NOT rely on END_LOCKED capture vars).
         fun appendJsonStringOrNull(key: String, value: String?) {
@@ -2932,6 +2885,21 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append(",\"testRepeatIndex\":").append(testRepeatIndexLog ?: "null")
         sb.append(",\"testTargetScenario\":")
         if (testTargetScenarioLog == null) sb.append("null") else sb.append("\"").append(escJson(testTargetScenarioLog)).append("\"")
+        sb.append(",\"measureSummary\":{")
+        sb.append("\"distanceMeters\":").append(String.format(Locale.US, "%.3f", ui.distanceMeters)).append(',')
+        sb.append("\"distanceSource\":\"").append(escJson(ui.finalDistanceSourceAfterGuard ?: ui.finalDistanceSourceBeforeGuard ?: ui.liveSource ?: "UNKNOWN")).append("\",")
+        sb.append("\"cupFixSuccess\":").append(if (ui.cupWpState == "FIXED") "true" else "false").append(',')
+        sb.append("\"cupFixSource\":\"").append(escJson(ui.cupWpState ?: "UNKNOWN")).append("\",")
+        sb.append("\"cupProjectedPxFinal\":").append(ui.multiRayProjectedCupPx?.let { String.format(Locale.US, "%.1f", it) } ?: "null").append(',')
+        sb.append("\"cupSupportCountFinal\":").append(ui.validSampleCount ?: "null").append(',')
+        sb.append("\"cupStdXzMFinal\":").append(ui.statisticalConfirmStdXZM?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(',')
+        sb.append("\"cupSpreadXzMFinal\":").append(ui.statisticalConfirmSpreadXZM?.let { String.format(Locale.US, "%.4f", it) } ?: "null").append(',')
+        sb.append("\"sameFrameAlignFinal\":").append(ui.confirmGateAccepted?.toString() ?: "null").append(',')
+        sb.append("\"zoomUsed\":").append(if (backgroundRenderer.getZoomLevel() > 1.0f) "true" else "false").append(',')
+        sb.append("\"depthStateFinal\":\"").append(lastDepthState.name).append("\",")
+        sb.append("\"slopeResultClass\":\"").append(escJson(ui.slopeExposureState ?: "HIDDEN")).append("\",")
+        sb.append("\"finalFailReason\":\"").append(escJson(ui.failReasonCode ?: "NONE")).append("\"")
+        sb.append("}")
         sb.append("}")
         return sb.toString()
     }
@@ -3302,38 +3270,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("\"mirrorV\": ").append(screenMirrorV)
         sb.append("},\n")
 
-        fun appendPointOrNullJson(p: PointF?): String {
-            return if (p == null) {
-                "null"
-            } else {
-                "{\"x\":${String.format(Locale.US, "%.1f", p.x)},\"y\":${String.format(Locale.US, "%.1f", p.y)}}"
-            }
-        }
-
-        val yoloHitDeltaPx =
-            if (cupDebugYoloPoint != null && cupDebugHitPoint != null) {
-                val dx = cupDebugYoloPoint!!.x - cupDebugHitPoint!!.x
-                val dy = cupDebugYoloPoint!!.y - cupDebugHitPoint!!.y
-                kotlin.math.sqrt(dx * dx + dy * dy)
-            } else {
-                null
-            }
-        sb.append("  \"yoloDebug\": {")
-        sb.append("\"cupAssistActive\": ").append(cupYoloAssistActive).append(", ")
-        sb.append("\"yoloStableFrames\": ").append(cupYoloStableFrames).append(", ")
-        sb.append("\"yoloConsecutiveMisses\": ").append(cupYoloConsecutiveMisses).append(", ")
-        sb.append("\"yoloActivationCount\": ").append(cupYoloActivationCount).append(", ")
-        sb.append("\"yoloDeactivationConsecutiveMissCount\": ").append(cupYoloDeactivationConsecutiveMissCount).append(", ")
-        sb.append("\"yoloAssistActiveAtLock\": ").append(cupYoloAssistActiveAtLock).append(", ")
-        sb.append("\"yoloStableFramesAtLock\": ").append(cupYoloStableFramesAtLock).append(", ")
-        sb.append("\"yoloConfThreshold\": ").append(String.format(Locale.US, "%.2f", CUP_YOLO_CONF_THRESHOLD)).append(", ")
-        sb.append("\"yoloStableFramesOn\": ").append(CUP_YOLO_STABLE_FRAMES_ON).append(", ")
-        sb.append("\"yoloConsecutiveMissToOff\": ").append(CUP_YOLO_CONSECUTIVE_MISS_TO_OFF).append(", ")
-        sb.append("\"yoloCenterPx\": ").append(appendPointOrNullJson(cupDebugYoloPoint)).append(", ")
-        sb.append("\"hitCenterPx\": ").append(appendPointOrNullJson(cupDebugHitPoint)).append(", ")
-        sb.append("\"roiCenterPx\": ").append(appendPointOrNullJson(cupDebugRoiPoint)).append(", ")
-        sb.append("\"yoloHitDeltaPx\": ").append(if (yoloHitDeltaPx == null) "null" else String.format(Locale.US, "%.2f", yoloHitDeltaPx))
-        sb.append("},\n")
+        sb.append("  \"yoloDebug\": {\"removed\": true},\n")
 
         // Include field-test measurement logs (JSONL) for easy sharing.
         val mf = measurementLogFile()

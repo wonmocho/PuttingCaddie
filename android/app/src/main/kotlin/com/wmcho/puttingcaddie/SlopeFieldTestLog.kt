@@ -58,6 +58,13 @@ object SlopeFieldTestLog {
         val sharedFinalResidualM: Float?,
         val sharedProjectedCupPx: Float?,
         val sharedSampleSpreadCupM: Float?,
+        val distanceState: String,
+        val verticalBestSource: String,
+        val lateralBestSource: String,
+        val verticalQuality: String,
+        val lateralQuality: String,
+        val verticalRejectReason: String?,
+        val lateralRejectReason: String?,
         /** 정책상 Phase1·Experimental은 제품 상하 후보에서 제외 */
         val phase1UsableForProduct: Boolean,
         val experimentalUsableForProduct: Boolean
@@ -113,14 +120,10 @@ object SlopeFieldTestLog {
                 else -> "none"
             }
 
-        val displayMode =
-            when {
-                gr.finalSlopeAvailable -> "UP_DOWN_ONLY"
-                else -> "NONE"
-            }
+        val displayMode = gr.uiSlopeState.name
         val lateralSuppressed =
             when {
-                gr.finalSlopeAvailable -> "policy_ui_hidden"
+                gr.uiSlopeState == UiSlopeState.DEGRADED -> "policy_ui_hidden"
                 gr.lateralPct == null -> "not_available"
                 else -> "unstable_or_outlier"
             }
@@ -175,6 +178,13 @@ object SlopeFieldTestLog {
             sharedFinalResidualM = log?.finalResidualM,
             sharedProjectedCupPx = ui.multiRayProjectedCupPx,
             sharedSampleSpreadCupM = spreadM,
+            distanceState = distanceState(ui),
+            verticalBestSource = gr.verticalBestSource.name,
+            lateralBestSource = gr.lateralBestSource.name,
+            verticalQuality = gr.verticalQuality.name,
+            lateralQuality = gr.lateralQuality.name,
+            verticalRejectReason = gr.verticalRejectReason,
+            lateralRejectReason = gr.lateralRejectReason,
             phase1UsableForProduct = false,
             experimentalUsableForProduct = false
         )
@@ -245,6 +255,17 @@ object SlopeFieldTestLog {
         sb.append("\"sharedFinalResidualM\":").append(num(snap.sharedFinalResidualM)).append(',')
         sb.append("\"sharedProjectedCupPx\":").append(num(snap.sharedProjectedCupPx)).append(',')
         sb.append("\"sharedSampleSpreadCupM\":").append(num(snap.sharedSampleSpreadCupM)).append(',')
+        sb.append("\"distanceState\":\"").append(esc(snap.distanceState)).append("\",")
+        sb.append("\"verticalBestSource\":\"").append(esc(snap.verticalBestSource)).append("\",")
+        sb.append("\"lateralBestSource\":\"").append(esc(snap.lateralBestSource)).append("\",")
+        sb.append("\"verticalQuality\":\"").append(esc(snap.verticalQuality)).append("\",")
+        sb.append("\"lateralQuality\":\"").append(esc(snap.lateralQuality)).append("\",")
+        sb.append("\"verticalRejectReason\":")
+        if (snap.verticalRejectReason == null) sb.append("null") else sb.append('"').append(esc(snap.verticalRejectReason)).append('"')
+        sb.append(',')
+        sb.append("\"lateralRejectReason\":")
+        if (snap.lateralRejectReason == null) sb.append("null") else sb.append('"').append(esc(snap.lateralRejectReason)).append('"')
+        sb.append(',')
         sb.append("\"phase1UsableForProduct\":").append(snap.phase1UsableForProduct).append(',')
         sb.append("\"experimentalUsableForProduct\":").append(snap.experimentalUsableForProduct)
         sb.append('}')
@@ -260,7 +281,14 @@ object SlopeFieldTestLog {
         val vMeters: Float?,
         val hMeters: Float,
         /** [UpDownSlopeProductGate] — 차단 시 상하 미표시 (거리와 무관) */
-        val productGateReason: String? = null
+        val productGateReason: String? = null,
+        val uiSlopeState: UiSlopeState = UiSlopeState.BLOCK,
+        val verticalQuality: RawQuality = RawQuality.BLOCK,
+        val lateralQuality: RawQuality = RawQuality.BLOCK,
+        val verticalRejectReason: String? = null,
+        val lateralRejectReason: String? = null,
+        val verticalBestSource: Source = Source.NONE,
+        val lateralBestSource: Source = Source.NONE
     )
 
     /**
@@ -269,66 +297,46 @@ object SlopeFieldTestLog {
      * 우선순위: Shared 안정 출력 → Shared raw (게이트 통과 시에만).
      */
     fun resolveGraphic(ui: V31StateMachine.UiModel): GraphicResolution {
-        val shared = ui.experimentalSharedSlope
-        val phase1 = ui.slopeDebugInfo
         val log = ui.sharedP3Log
-        val hv = ui.horizontalVerticalMeters
-        val rawM = ui.distanceMeters.takeIf { it.isFinite() && it > 0f } ?: 0f
         val projectedCupPx = ui.multiRayProjectedCupPx
         val sampleSpreadCupM = ui.slopeExperimentalResult?.experimentalDiagnostics?.sampleSpreadCupM
-
-        fun resolveH(sd: SlopeDebugInfo?): Float {
-            val h = sd?.hMeters ?: hv?.first ?: rawM
-            return if (h.isFinite() && h > 0f) h else rawM.coerceAtLeast(1e-4f)
-        }
-
         val productGateReason = UpDownSlopeProductGate.productGateReason(log, projectedCupPx, sampleSpreadCupM)
-        val sharedP3Ok = productGateReason == null
 
-        val forwardPct: Float?
-        val sourceTag: String
-        when {
-            sharedP3Ok &&
-                shared != null && shared.blockedReason.isNullOrBlank() && shared.quality == "valid" &&
-                shared.forwardPct != null -> {
-                forwardPct = shared.forwardPct
-                sourceTag = "SHARED"
-            }
-            sharedP3Ok &&
-                log?.finalForwardPctRaw != null && log.finalForwardPctRaw.isFinite() -> {
-                forwardPct = log.finalForwardPctRaw
-                sourceTag = "SHARED_RAW"
-            }
-            else -> {
-                forwardPct = null
-                sourceTag = "NONE"
-            }
-        }
+        val sharedSet = buildSharedCandidate(ui)
+        val localSet = buildLocalCandidate(ui)
+        val hvVertical = buildHvVerticalCandidate(ui)
+        val verticalBest = decideBestVertical(sharedSet.verticalCandidate, localSet.verticalCandidate, hvVertical)
+        val lateralBest = decideBestLateral(sharedSet.lateralCandidate, localSet.lateralCandidate)
+        val uiState = decideSlopeDisplayState(verticalBest, lateralBest)
 
-        val h =
-            when {
-                shared != null -> resolveH(shared)
-                phase1 != null -> resolveH(phase1)
-                else -> rawM.coerceAtLeast(1e-4f)
-            }
+        val rawM = ui.distanceMeters.takeIf { it.isFinite() && it > 0f } ?: 0f
+        val h = verticalBest.hMeters?.takeIf { it.isFinite() && it > 0f } ?: rawM.coerceAtLeast(1e-4f)
+        val forwardPct = if (uiState == UiSlopeState.BLOCK) null else verticalBest.value
         val vMeters = forwardPct?.let { (it / 100f) * h }
-
-        val lateralPct: Float? =
-            when {
-                sharedP3Ok &&
-                    shared != null && shared.blockedReason.isNullOrBlank() && shared.quality == "valid" &&
-                    shared.lateralPct != null -> shared.lateralPct
-                else -> null
+        val lateralPct = if (uiState == UiSlopeState.FULL) lateralBest.value else null
+        val sourceTag =
+            when (verticalBest.source) {
+                Source.SHARED -> "SHARED"
+                Source.LOCAL -> "LOCAL"
+                Source.HV -> "HV"
+                Source.NONE -> "NONE"
             }
 
         return GraphicResolution(
             source = sourceTag,
-            finalSlopeAvailable = forwardPct != null && vMeters != null,
+            finalSlopeAvailable = uiState != UiSlopeState.BLOCK && forwardPct != null && vMeters != null,
             forwardPct = forwardPct,
             lateralPct = lateralPct,
             vMeters = vMeters,
             hMeters = h,
-            productGateReason = productGateReason
+            productGateReason = productGateReason,
+            uiSlopeState = uiState,
+            verticalQuality = verticalBest.quality,
+            lateralQuality = lateralBest.quality,
+            verticalRejectReason = verticalBest.rejectReason,
+            lateralRejectReason = lateralBest.rejectReason,
+            verticalBestSource = verticalBest.source,
+            lateralBestSource = lateralBest.source
         )
     }
 
@@ -435,6 +443,15 @@ object SlopeFieldTestLog {
         return "NO_SLOPE_UNKNOWN" to "unknown"
     }
 
+    private fun distanceState(ui: V31StateMachine.UiModel): String {
+        val distanceOk = ui.distanceMeters.isFinite() && ui.distanceMeters > 0f
+        return when {
+            !distanceOk -> "DISTANCE_BLOCK"
+            ui.confirmGateAccepted == true -> "DISTANCE_FIXED"
+            else -> "DISTANCE_DEGRADED"
+        }
+    }
+
     /**
      * RESULT 상태로 **처음 진입한 프레임**에서만 호출한다 (호출부에서 전이 감지).
      */
@@ -477,9 +494,13 @@ object SlopeFieldTestLog {
         )
         Log.d(
             TAG,
-            "SLOPE_DISPLAY_DECISION mode=UP_DOWN_ONLY upDownAvailable=${gr.finalSlopeAvailable} " +
+            "SLOPE_DISPLAY_DECISION mode=${gr.uiSlopeState} upDownAvailable=${gr.finalSlopeAvailable} " +
                 "leftRightAvailable=${gr.lateralPct != null} finalForwardSource=${gr.source} " +
-                "lateralSuppressedReason=policy_ui_hidden"
+                "distanceState=${distanceState(ui)} verticalBestSource=${gr.verticalBestSource} " +
+                "lateralBestSource=${gr.lateralBestSource} verticalQuality=${gr.verticalQuality} " +
+                "lateralQuality=${gr.lateralQuality} verticalRejectReason=${gr.verticalRejectReason ?: "none"} " +
+                "lateralRejectReason=${gr.lateralRejectReason ?: "none"} " +
+                "lateralSuppressedReason=${if (gr.uiSlopeState == UiSlopeState.DEGRADED) "policy_ui_hidden" else "none"}"
         )
         val (noSlopeReason, noSlopeClass) = resolveNoSlopeReasonAndClass(
             ui, ballAnchored, cupAnchored, distanceOk, gr

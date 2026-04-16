@@ -4,6 +4,7 @@ import android.graphics.PointF
 import android.opengl.Matrix
 import android.util.Log
 import android.graphics.RectF
+import android.graphics.Rect
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
@@ -19,6 +20,15 @@ import kotlin.math.sqrt
 class V31HitSampler(private val mapper: ScreenToViewMapper) {
     enum class HitType { PLANE, DEPTH, POINT, NONE }
     private val BALL_GRID_STEP_PX = 6f
+    data class MultiRayRejectDebug(
+        var totalRayCount: Int = 0,
+        var acceptedHitCount: Int = 0,
+        var rejectedNoIntersection: Int = 0,
+        var rejectedOffRoi: Int = 0,
+        var rejectedDistanceOutlier: Int = 0,
+        var rejectedBackface: Int = 0,
+        var rejectedTransformMismatch: Int = 0
+    )
 
     data class Sample(
         val bestHit: HitResult?,
@@ -38,8 +48,12 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val gridEstimatedDistanceMeters: Float? = null,
         val gridProjectedCupPx: Float? = null,
         val centerFallbackUsed: Boolean? = null,
+        val measurementTransform: MeasurementTransform? = null,
+        val detectionSample: CupDetectionSample? = null,
+        val raycastSample: RaycastSample? = null,
         // BALL only (gridCount==9): rejection reason when bestHit is null
-        val ballSampleRejectionReason: String? = null
+        val ballSampleRejectionReason: String? = null,
+        val multiRayRejectDebug: MultiRayRejectDebug? = null
     )
 
     private data class Candidate(
@@ -66,6 +80,102 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val pose: Pose,
         val hitDistanceMeters: Float
     )
+
+    data class TransformSignature(
+        val zoomRatio: Float,
+        val cropRectLeft: Int,
+        val cropRectTop: Int,
+        val cropRectRight: Int,
+        val cropRectBottom: Int,
+        val fx: Float,
+        val fy: Float,
+        val cx: Float,
+        val cy: Float,
+        val displayRotation: Int,
+        val previewW: Int,
+        val previewH: Int,
+        val sensorW: Int,
+        val sensorH: Int
+    )
+
+    fun buildMeasurementTransform(
+        frame: Frame,
+        transformVersion: Long,
+        sourceFrameId: Long
+    ): Pair<MeasurementTransform, TransformSignature>? {
+        val previewW = mapper.viewWidthPx()
+        val previewH = mapper.viewHeightPx()
+        if (previewW <= 1 || previewH <= 1) return null
+
+        val intr = frame.camera.textureIntrinsics
+        val dims = intr.imageDimensions
+        val sensorW = dims.getOrNull(0) ?: 0
+        val sensorH = dims.getOrNull(1) ?: 0
+        if (sensorW <= 1 || sensorH <= 1) return null
+
+        val zoom = mapper.zoomLevel.coerceAtLeast(1.0f)
+        val cropW = (sensorW / zoom).toInt().coerceAtLeast(1)
+        val cropH = (sensorH / zoom).toInt().coerceAtLeast(1)
+        val cropL = ((sensorW - cropW) / 2f).toInt().coerceAtLeast(0)
+        val cropT = ((sensorH - cropH) / 2f).toInt().coerceAtLeast(0)
+        val cropRect = Rect(cropL, cropT, cropL + cropW, cropT + cropH)
+
+        val sx = cropRect.width().toFloat() / previewW.toFloat()
+        val sy = cropRect.height().toFloat() / previewH.toFloat()
+        val previewToSensor =
+            Matrix3x3(
+                floatArrayOf(
+                    sx, 0f, cropRect.left.toFloat(),
+                    0f, sy, cropRect.top.toFloat(),
+                    0f, 0f, 1f
+                )
+            )
+        val sensorToPreview =
+            Matrix3x3(
+                floatArrayOf(
+                    1f / sx, 0f, -cropRect.left.toFloat() / sx,
+                    0f, 1f / sy, -cropRect.top.toFloat() / sy,
+                    0f, 0f, 1f
+                )
+            )
+        val fx = intr.focalLength.getOrNull(0) ?: 0f
+        val fy = intr.focalLength.getOrNull(1) ?: 0f
+        val cx = intr.principalPoint.getOrNull(0) ?: 0f
+        val cy = intr.principalPoint.getOrNull(1) ?: 0f
+        val intrinsics = floatArrayOf(fx, fy, cx, cy)
+        val signature =
+            TransformSignature(
+                zoomRatio = zoom,
+                cropRectLeft = cropRect.left,
+                cropRectTop = cropRect.top,
+                cropRectRight = cropRect.right,
+                cropRectBottom = cropRect.bottom,
+                fx = fx,
+                fy = fy,
+                cx = cx,
+                cy = cy,
+                displayRotation = mapper.rotationDeg.toInt(),
+                previewW = previewW,
+                previewH = previewH,
+                sensorW = sensorW,
+                sensorH = sensorH
+            )
+        return MeasurementTransform(
+            zoomRatio = zoom,
+            cropRect = cropRect,
+            sensorToPreview = sensorToPreview,
+            previewToSensor = previewToSensor,
+            intrinsicsFxFyCxCy = intrinsics,
+            displayRotation = mapper.rotationDeg.toInt(),
+            transformVersion = transformVersion,
+            timestampNs = frame.timestamp,
+            sourceFrameId = sourceFrameId
+        ) to signature
+    }
+
+    fun mapPreviewToSensor(previewPt: PointF, transform: MeasurementTransform): PointF {
+        return transform.previewToSensor.map(previewPt)
+    }
 
     /**
      * Precise screen(px) -> hitTest local(px) mapping (UV-adjusted).
@@ -297,13 +407,28 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         requireUpwardFacing: Boolean = false,
         forceFar5x5: Boolean = false,
         /** null이면 median에 가장 가까운 히트; 지정 시 XZ로 [liveWorldAlignForHitPick]에 가장 가까운 plane 히트 선택 */
-        liveWorldAlignForHitPick: FloatArray? = null
+        liveWorldAlignForHitPick: FloatArray? = null,
+        measurementTransform: MeasurementTransform? = null
     ): Sample {
         val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
         val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
 
         val cx = baseRoiScreen.centerX()
         val cy = baseRoiScreen.centerY() + (glH * centerYOffsetRatio)
+        val centerPreview = PointF(cx, cy)
+        val centerSensor = measurementTransform?.let { mapPreviewToSensor(centerPreview, it) }
+        val detectionSample =
+            if (measurementTransform != null && centerSensor != null) {
+                CupDetectionSample(
+                    centerPreviewPx = centerPreview,
+                    centerSensorPx = centerSensor,
+                    detectorFrameTimestampNs = frame.timestamp,
+                    transformVersion = measurementTransform.transformVersion,
+                    sourceFrameId = measurementTransform.sourceFrameId
+                )
+            } else {
+                null
+            }
 
         // Distance-adaptive grid (0~10m). Goal: grid/span/step never collapses to 0.
         data class Plan(val name: String, val gridX: Int, val gridY: Int, val spanRatio: Float)
@@ -345,12 +470,16 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             }
 
         // 3) Mode selection by distance and explicit far expansion request.
-        // Policy: stop relying on ULTRA_LINE_5 alone; prefer spatial sampling in far range.
+        // 6m+ 또는 저픽셀: FAR_3x3 고정 완화 → FAR_5x5 (지시문 chooseSamplingPlan 정렬).
+        val promoteFar5x5ForPxOrRange =
+            dMeters >= 6.0f ||
+                (projectedCupPxView != null && projectedCupPxView.isFinite() && projectedCupPxView < 45f)
         val plan =
             when {
                 forceFar5x5 -> Plan("FAR_5x5", 5, 5, 0.65f)
                 dMeters < 1.0f -> Plan("NEAR_7x7", 7, 7, 0.80f)
                 dMeters < 3.0f -> Plan("MID_5x5", 5, 5, 0.70f)
+                promoteFar5x5ForPxOrRange -> Plan("FAR_5x5", 5, 5, 0.65f)
                 else -> Plan("FAR_3x3", 3, 3, 0.60f)
             }
 
@@ -381,7 +510,7 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val stepPx = max(stepX, stepY)
 
         val camY = frame.camera.pose.ty()
-        val allowOutsidePolygonForFar = (plan.gridX <= 3) // FAR_3x3 or ULTRA_LINE_5
+        val allowOutsidePolygonForFar = (plan.gridX <= 3) // FAR_3x3 등 — FAR_5x5는 폴리곤 내 우선
         val policy =
             PlanePolicy(
                 maxDistanceMeters = maxHitDistanceMeters,
@@ -394,6 +523,7 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val total = plan.gridX * plan.gridY
         val selected = ArrayList<SelectedHit>(total)
         val distances = ArrayList<Float>(total)
+        val rejectDebug = MultiRayRejectDebug(totalRayCount = total)
 
         // Build samples directly in screen coords, but execute hitTest at UV-adjusted local coords.
         for (iy in 0 until plan.gridY) {
@@ -402,13 +532,39 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             for (ix in 0 until plan.gridX) {
                 val xOffset = if (plan.gridX <= 1) 0f else (-gridHalfX + (ix.toFloat() * stepX))
                 val xScreen = cx + xOffset
+                    if (!xScreen.isFinite() || !yScreen.isFinite() || xScreen < 0f || xScreen > glW || yScreen < 0f || yScreen > glH) {
+                        rejectDebug.rejectedOffRoi++
+                        continue
+                    }
 
-                val pAdj = adjustedHitTestLocalPoint(frame, xScreen, yScreen) ?: continue
+                val pAdj = adjustedHitTestLocalPoint(frame, xScreen, yScreen)
+                if (pAdj == null) {
+                    rejectDebug.rejectedNoIntersection++
+                    continue
+                }
                 val results = frame.hitTest(pAdj.x, pAdj.y)
-                val hit = selectBestPlaneHit(results, policy, camY) ?: continue
+                if (results.isEmpty()) {
+                    rejectDebug.rejectedNoIntersection++
+                    continue
+                }
+                val hit = selectBestPlaneHit(results, policy, camY)
+                if (hit == null) {
+                    rejectDebug.rejectedNoIntersection++
+                    continue
+                }
+                val plane = hit.trackable as? Plane
+                if (plane != null && plane.type == Plane.Type.HORIZONTAL_DOWNWARD_FACING) {
+                    rejectDebug.rejectedBackface++
+                    continue
+                }
+                if (measurementTransform != null && dMeters.isFinite() && kotlin.math.abs(hit.distance - dMeters) > 3.0f) {
+                    rejectDebug.rejectedDistanceOutlier++
+                    continue
+                }
                 val pose = hit.hitPose
                 selected.add(SelectedHit(hit = hit, pose = pose, hitDistanceMeters = hit.distance))
                 distances.add(hit.distance)
+                rejectDebug.acceptedHitCount++
             }
         }
 
@@ -461,7 +617,22 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 gridPlan = plan.name,
                 gridEstimatedDistanceMeters = dMeters,
                 gridProjectedCupPx = projectedCupPxView,
-                centerFallbackUsed = (fallbackHit != null)
+                centerFallbackUsed = (fallbackHit != null),
+                measurementTransform = measurementTransform,
+                detectionSample = detectionSample,
+                multiRayRejectDebug = rejectDebug,
+                raycastSample =
+                    fallbackHit?.hitPose?.let { fp ->
+                        measurementTransform?.let {
+                            RaycastSample(
+                                worldPoint = floatArrayOf(fp.tx(), fp.ty(), fp.tz()),
+                                arFrameTimestampNs = frame.timestamp,
+                                transformVersion = it.transformVersion,
+                                sourceFrameId = it.sourceFrameId,
+                                hitDistanceM = fallbackHit.distance
+                            )
+                        }
+                    }
             )
         }
 
@@ -530,7 +701,20 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             gridPlan = plan.name,
             gridEstimatedDistanceMeters = dMeters,
             gridProjectedCupPx = projectedCupPxView,
-            centerFallbackUsed = false
+            centerFallbackUsed = false,
+            measurementTransform = measurementTransform,
+            detectionSample = detectionSample,
+            multiRayRejectDebug = rejectDebug,
+            raycastSample =
+                measurementTransform?.let {
+                    RaycastSample(
+                        worldPoint = floatArrayOf(best.pose.tx(), best.pose.ty(), best.pose.tz()),
+                        arFrameTimestampNs = frame.timestamp,
+                        transformVersion = it.transformVersion,
+                        sourceFrameId = it.sourceFrameId,
+                        hitDistanceM = best.hitDistanceMeters
+                    )
+                }
         )
     }
 

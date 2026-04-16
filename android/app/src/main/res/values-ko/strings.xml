@@ -12,6 +12,8 @@
     <string name="greeniq_hint_cup">컵을 화면 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n컵이 작게 보이면 컵 쪽으로 이동해 다시 누르세요.</string>
     <string name="greeniq_hint_cup_realign">Ball을 먼저 찍은 후 컵이 잘 보이는 위치에서 Cup을 누르세요</string>
     <string name="greeniq_hint_done">↺를 눌러 리셋</string>
+    <string name="cup_commit_blocked_low_px">화면에서 컵이 너무 작아 안전하게 고정할 수 없습니다. 더 가까이 가거나 확대해 컵이 분명히 보이게 한 뒤 잠시 유지해 주세요.</string>
+    <string name="greeniq_result_low_quality_note">참고: 거리는 나왔지만 화면에서 컵이 작아 신뢰도는 낮은 편입니다.</string>
     <!-- Debug / instruction (개발 빌드, 사용자 친화적) -->
     <string name="debug_ball_ground_scan">바닥 인식 중 %1$d/%2$d</string>
     <string name="debug_ball_tracking">주변을 천천히 비춰 주세요</string>
@@ -30,7 +32,7 @@
     <string name="ball_hint_hits">공을 안정적으로 맞춘 후 BALL을 누르세요</string>
     <!-- BALL gate: [BallBlockedReason] (release) -->
     <string name="ball_blocked_true_too_close">공에서 너무 가깝습니다 (30cm 이상 떨어져 주세요)</string>
-    <string name="ball_blocked_start_distance_not_ready">거리 측정 준비 중입니다</string>
+    <string name="ball_blocked_start_distance_not_ready">볼에 너무 가까우면 거리 오차가 커집니다. 한 걸음 뒤로 물러나 잠시 안정적으로 비춘 뒤 BALL을 누르세요.</string>
     <string name="ball_blocked_ar_warmup">바닥 인식 준비 중입니다</string>
     <string name="ball_blocked_tracking">트래킹 준비 중입니다</string>
     <string name="ball_blocked_stabilize_ball">공 위치를 잠시 안정적으로 유지해 주세요</string>
@@ -56,6 +58,7 @@
     <string name="label_side_slope">에이밍</string>
     <string name="label_confidence">신뢰도</string>
     <string name="slope_not_measured">경사 미측정</string>
+    <string name="result_slope_unavailable_distance_ok">경사는 제공하지 않습니다. 거리는 확정되었습니다.</string>
     <string name="slope_lateral_not_shown_product">측면 미표시</string>
     <string name="level0_message">컵과 볼이 보이도록 화면을 다시 맞춘 후 재측정 바랍니다.</string>
     <string name="level1_message">거리는 측정되었으나 경사 정보가 부족합니다.</string>

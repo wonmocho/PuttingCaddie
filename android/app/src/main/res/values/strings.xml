@@ -12,6 +12,8 @@
     <string name="greeniq_hint_cup">Align the cup in the center target ring and tap CUP.\nIf the cup looks small, move toward it and tap again.</string>
     <string name="greeniq_hint_cup_realign">Tap BALL first, then tap CUP from where the cup is clearly visible.</string>
     <string name="greeniq_hint_done">Tap ↺ to reset</string>
+    <string name="cup_commit_blocked_low_px">Cup is too small on screen to lock safely. Move closer or zoom so the cup is clearly visible, then hold steady.</string>
+    <string name="greeniq_result_low_quality_note">Note: distance is usable but lower confidence (small cup on screen).</string>
     <!-- Debug / instruction (dev build, user-friendly) -->
     <string name="debug_ball_ground_scan">Ground scan %1$d/%2$d</string>
     <string name="debug_ball_tracking">Tracking… move slowly</string>
@@ -30,7 +32,7 @@
     <string name="ball_hint_hits">Hold the ball steady, then tap BALL</string>
     <!-- BALL gate: [BallBlockedReason] (release) -->
     <string name="ball_blocked_true_too_close">Stay at least 30 cm from the ball</string>
-    <string name="ball_blocked_start_distance_not_ready">Preparing distance measurement</string>
+    <string name="ball_blocked_start_distance_not_ready">Too close to the ball — accuracy drops a lot. Step back (about arm\'s length or more), hold steady, then tap BALL.</string>
     <string name="ball_blocked_ar_warmup">Recognizing the floor…</string>
     <string name="ball_blocked_tracking">Waiting for tracking…</string>
     <string name="ball_blocked_stabilize_ball">Hold the ball position steady for a moment</string>
@@ -56,6 +58,8 @@
     <string name="label_side_slope">Aiming</string>
     <string name="label_confidence">Confidence</string>
     <string name="slope_not_measured">Slope not measured</string>
+    <!-- Distance/slope separation: distance SSOT succeeded; slope intentionally omitted -->
+    <string name="result_slope_unavailable_distance_ok">Slope not shown — distance is confirmed.</string>
     <!-- Product policy: lateral / aiming row hidden until side-slope is stable -->
     <string name="slope_lateral_not_shown_product">—</string>
     <string name="level0_message">Reframe so the cup and ball are visible, then re-measure.</string>
