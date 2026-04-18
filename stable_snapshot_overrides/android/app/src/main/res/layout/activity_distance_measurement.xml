@@ -1,0 +1,575 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:background="@android:color/transparent">
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guidelineTop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintGuide_percent="0.105" />
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guidelineBottom"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        app:layout_constraintGuide_percent="0.78" />
+
+    <!-- Top bar background -->
+    <View
+        android:id="@+id/viewTopBarBg"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/pc_bg_primary"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/guidelineTop"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Bottom area background (hide camera outside ViewFinder) -->
+    <View
+        android:id="@+id/viewBottomBg"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@color/pc_bg_primary"
+        app:layout_constraintTop_toTopOf="@id/guidelineBottom"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageView
+        android:id="@+id/imgLogo"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:src="@mipmap/ic_launcher"
+        android:scaleType="fitCenter"
+        android:contentDescription="@string/app_name"
+        android:layout_marginStart="18dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg" />
+
+    <LinearLayout
+        android:id="@+id/layoutTopTexts"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="12dp"
+        app:layout_constraintStart_toEndOf="@id/imgLogo"
+        app:layout_constraintEnd_toStartOf="@id/btnSettings"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg">
+
+        <TextView
+            android:id="@+id/txtTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_distance"
+            android:textColor="#FFFFFF"
+            android:textSize="23sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="4dp"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/txtSubtitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/greeniq_subtitle_ready"
+            android:textColor="#FFFFFF"
+            android:alpha="0.8"
+            android:textSize="13sp"
+            android:layout_marginBottom="3dp"
+            android:includeFontPadding="false" />
+
+        <TextView
+            android:id="@+id/txtTracking"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/status_ready"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:alpha="0.6"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:includeFontPadding="false" />
+    </LinearLayout>
+
+    <ImageButton
+        android:id="@+id/btnSettings"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_settings_24"
+        app:tint="#FFFFFF"
+        android:contentDescription="@string/cd_settings"
+        android:layout_marginEnd="14dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/viewTopBarBg"
+        app:layout_constraintBottom_toBottomOf="@id/viewTopBarBg" />
+
+    <com.wmcho.puttingcaddie.ViewFinderView
+        android:id="@+id/viewFinder"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="@id/guidelineTop"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintBottom_toTopOf="@id/guidelineBottom"
+        android:layout_marginTop="10dp"
+        android:layout_marginStart="18dp"
+        android:layout_marginEnd="18dp"
+        android:layout_marginBottom="10dp" />
+
+    <!-- Zoom ratio: ViewFinder 중앙 상부 -->
+    <TextView
+        android:id="@+id/txtZoomRatio"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="1.0x"
+        android:textColor="@color/pc_white"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:background="@drawable/bg_zoom_badge"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone"
+        android:layout_marginTop="12dp"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder" />
+
+    <!-- Zoom +/- buttons: ViewFinder 내부 오른쪽, 세로 중앙에서 25mm 아래 -->
+    <LinearLayout
+        android:id="@+id/layoutZoomButtons"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone"
+        android:layout_marginEnd="12dp"
+        android:layout_marginTop="25mm"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnZoomPlus"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="+"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@color/pc_white"
+            android:background="@drawable/bg_zoom_button_oval"
+            app:backgroundTint="@null"
+            app:cornerRadius="20dp"
+            app:strokeWidth="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:layout_marginBottom="3dp"
+            android:contentDescription="@string/cd_zoom_in" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnZoomMinus"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:text="−"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="@color/pc_white"
+            android:background="@drawable/bg_zoom_button_oval"
+            app:backgroundTint="@null"
+            app:cornerRadius="20dp"
+            app:strokeWidth="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:contentDescription="@string/cd_zoom_out" />
+    </LinearLayout>
+
+    <View
+        android:id="@+id/dotRoi"
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="#FFFFFFFF"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <View
+        android:id="@+id/dotYolo"
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="#FFF44336"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <View
+        android:id="@+id/dotHit"
+        android:layout_width="8dp"
+        android:layout_height="8dp"
+        android:background="#FF18A558"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <TextView
+        android:id="@+id/txtCupAssist"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/cup_manual_aim"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:background="@drawable/bg_cup_assist_inactive"
+        android:visibility="gone"
+        android:alpha="0"
+        android:layout_marginTop="14dp"
+        android:layout_marginEnd="28dp"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder" />
+
+    <!-- Distance overlay (on camera) -->
+    <TextView
+        android:id="@+id/txtDistance"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0.0 m"
+        android:textColor="@color/pc_white"
+        android:textSize="68sp"
+        android:textStyle="bold"
+        android:background="@drawable/pc_live_glass"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:shadowColor="#33000000"
+        android:shadowDx="0"
+        android:shadowDy="2"
+        android:shadowRadius="2"
+        android:includeFontPadding="false"
+        android:translationY="-8mm"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        android:layout_marginBottom="18dp" />
+
+    <!-- Reset: touch 48dp, circle 40dp, icon 32dp -->
+    <FrameLayout
+        android:id="@+id/layoutResetTouch"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:foreground="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/greeniq_reset"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder">
+
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardResetBg"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="center"
+            app:cardBackgroundColor="#BF000000"
+            app:cardCornerRadius="22dp"
+            app:cardElevation="6dp"
+            app:cardUseCompatPadding="false">
+
+            <ImageView
+                android:id="@+id/imgResetIcon"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_reset_24"
+                app:tint="#E6FFFFFF"
+                android:contentDescription="@string/greeniq_reset" />
+        </com.google.android.material.card.MaterialCardView>
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/txtDistanceLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/greeniq_label_live"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp"
+        android:includeFontPadding="false"
+        android:alpha="0.7"
+        android:translationY="-8mm"
+        app:layout_constraintTop_toBottomOf="@id/txtDistance"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        android:layout_marginTop="-6dp" />
+
+    <!-- Success feedback (check only; no NG) -->
+    <ImageView
+        android:id="@+id/imgCheck"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:src="@drawable/ic_check_bold_28"
+        app:tint="#18A558"
+        android:visibility="gone"
+        android:alpha="0"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintVertical_bias="0.62" />
+
+    <TextView
+        android:id="@+id/txtNgHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#CCCCCC"
+        android:textSize="13sp"
+        android:alpha="0"
+        android:visibility="gone"
+        android:layout_marginTop="6dp"
+        app:layout_constraintTop_toBottomOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 하단 영역: instruction, Pro CTA, BALL/CUP 버튼. 결과값은 측정data 버튼 → 별도 페이지 -->
+    <ScrollView
+        android:id="@+id/scroll_bottom_area"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:fillViewport="true"
+        app:layout_constraintTop_toBottomOf="@id/guidelineBottom"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="24dp">
+
+            <TextView
+                android:id="@+id/txt_instruction"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/greeniq_hint_ball"
+                android:textColor="@color/pc_white"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:maxLines="3"
+                android:minLines="1"
+                android:background="@android:color/transparent"
+                android:gravity="center"
+                android:layout_marginTop="8dp"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp" />
+
+            <!-- Pro CTA (RESULT 시 무료 사용자용. SHOW_PRO_PAYWALL로 제어. debug에서는 비노출) -->
+            <LinearLayout
+                android:id="@+id/layout_pro_cta"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:visibility="gone"
+                android:layout_marginTop="10dp"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp">
+
+                <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_pro_monthly"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="@string/pro_cta_monthly"
+            android:textSize="14sp"
+            android:layout_marginEnd="6dp"
+            android:textColor="@color/pc_button_text_selector"
+            app:backgroundTint="@color/pc_button_bg_selector"
+            app:cornerRadius="12dp"
+            app:strokeWidth="0dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_pro_3months"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:text="@string/pro_cta_3months"
+            android:textSize="14sp"
+            android:layout_marginStart="6dp"
+            android:textColor="@color/pc_button_text_selector"
+            app:backgroundTint="@color/pc_button_bg_selector"
+            app:cornerRadius="12dp"
+            app:strokeWidth="0dp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/layout_start_finish"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_start"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="@string/btn_start"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginEnd="8dp"
+            android:textColor="@color/pc_button_text_selector"
+            app:backgroundTint="@color/pc_button_bg_selector"
+            app:cornerRadius="14dp"
+            app:strokeWidth="0dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_finish"
+            android:layout_width="0dp"
+            android:layout_height="52dp"
+            android:layout_weight="1"
+            android:text="@string/btn_finish"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginStart="8dp"
+            android:textColor="@color/pc_button_text_selector"
+            app:backgroundTint="@color/pc_button_bg_selector"
+            app:cornerRadius="14dp"
+            app:strokeWidth="0dp"
+                    android:enabled="false" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/practicePanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:layout_marginTop="10dp"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:padding="12dp"
+                android:background="@drawable/pc_live_glass">
+
+                <TextView
+                    android:id="@+id/practiceTitleText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/practice_title"
+                    android:textColor="@color/pc_white"
+                    android:textStyle="bold"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/practiceTargetText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/practice_target_placeholder"
+                    android:textColor="@color/pc_white"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/practiceCurrentText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="@string/practice_current_placeholder"
+                    android:textColor="@color/pc_white"
+                    android:textSize="19sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/practiceErrorText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/practice_error_placeholder"
+                    android:textColor="@color/pc_white"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/practiceResultText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/practice_ready"
+                    android:textColor="@color/pc_white"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/practiceStatsText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/practice_stats_placeholder"
+                    android:textColor="@color/pc_white"
+                    android:alpha="0.9"
+                    android:textSize="13sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="10dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/practiceStartButton"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:text="@string/practice_start"
+                        android:textSize="14sp"
+                        android:textColor="@color/pc_button_text_selector"
+                        app:backgroundTint="@color/pc_button_bg_selector"
+                        app:cornerRadius="12dp"
+                        app:strokeWidth="0dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/practiceStopButton"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:layout_marginStart="8dp"
+                        android:text="@string/practice_stop"
+                        android:textSize="14sp"
+                        android:textColor="@color/pc_button_text_selector"
+                        app:backgroundTint="@color/pc_button_bg_selector"
+                        app:cornerRadius="12dp"
+                        app:strokeWidth="0dp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 측정data: CUP 아래 고정. RESULT 시 표시 → 별도 페이지에 전체 결과 표시 -->
+            <Button
+                android:id="@+id/btn_result_data"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginTop="8dp"
+                android:layout_marginStart="24dp"
+                android:layout_marginEnd="24dp"
+                android:text="@string/btn_measurement_data"
+                android:textSize="14sp"
+                android:visibility="gone" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+

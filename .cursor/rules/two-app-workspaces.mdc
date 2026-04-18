@@ -1,0 +1,48 @@
+---
+description: PuttingCaddy+ vs PuttingCaddy — 폴더 이름 고정 (실수 방지)
+alwaysApply: true
+---
+
+# 두 앱 = 두 폴더 이름 (중첩 금지)
+
+## PuttingCaddy+ (연구)
+
+- **Git 워크스페이스 루트** 폴더 이름: **`PuttingCaddyPlus`** (`android/`, `lib/`).
+
+- 앱 런처 이름 **PuttingCaddy+**, `com.wmcho.puttingcaddyplus`.
+
+
+
+## PuttingCaddy (4/3 안정)
+
+
+
+- **별도 디렉터리**만 사용한다. 폴더 이름: **`PuttingCaddy`**. Plus 저장소 **안의 하위 폴더**에 안정 소스를 두지 않는다.
+
+- 기본 생성: 형제 **`PuttingCaddy`** (부모가 `StudioProjects`이면 `…/StudioProjects/PuttingCaddy`). 스크립트: `scripts/export_stable_puttingcaddy.ps1` → `PUTTINGCADDY_STABLE_DIR` 로 경로 덮어쓰기 가능.
+
+- 안정 전용 패치: Plus 저장소의 `stable_snapshot_overrides/android/`.
+
+- 사용자가 “PuttingCaddy”, “안정”, “4/3”, “스토어”, “거리만”이라고 하면 **Plus의 루트 `android/`를 수정하지 말고** **`PuttingCaddy`** 워크스페이스(export된 안정 폴더)만 수정한다.
+
+
+
+## Cursor 권장
+
+
+
+- **Plus 작업:** **`PuttingCaddyPlus`** 폴더만 연다.
+
+- **안정 작업:** **`PuttingCaddy`** 폴더만 연다. 멀티 루트에 Plus를 같이 넣지 않는 것이 가장 안전.
+
+
+
+## 참고
+
+
+
+- `docs/TWO_APP_SPLIT.md`
+
+- 루트 `REPO_ROOT_IS_PUTTINGCADDY_PLUS.txt`
+
+

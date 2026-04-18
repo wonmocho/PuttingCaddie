@@ -1,0 +1,34 @@
+================================================================================
+
+이 Git 저장소 = PuttingCaddy+ (연구)  |  applicationId: com.wmcho.puttingcaddyplus
+
+이 저장소 폴더 이름은 PuttingCaddyPlus 로 둔다 (안정 export 경로와 충돌 방지).
+
+================================================================================
+
+
+
+PuttingCaddy (안정, 4/3)은 이 저장소 안이 아니라 형제 폴더에 둔다.
+
+
+
+  기본 경로:  <이 저장소의 상위 폴더>/PuttingCaddy
+
+  예:        …\StudioProjects\PuttingCaddy   (옆에 PuttingCaddyPlus = 이 Plus 저장소)
+
+
+
+  생성:      powershell -File scripts/export_stable_puttingcaddy.ps1
+
+  다른 경로: 환경 변수 PUTTINGCADDY_STABLE_DIR 에 전체 경로 지정
+
+
+
+안정 앱은 Cursor에서 PuttingCaddy 폴더만 단독으로 여세요.
+
+패치 템플릿은 이 저장소의 stable_snapshot_overrides/ 입니다.
+
+
+
+================================================================================
+

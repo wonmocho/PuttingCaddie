@@ -122,14 +122,46 @@ object DistanceFieldTestLog {
         val cupEndAnchorPositionSource: String?,
         /** 앵커 포즈 vs freeze 직전 live world XZ(m) */
         val cupEndAnchorVsLiveWorldXZM: Float?,
-        val debugBannerShort: String
+        val debugBannerShort: String,
+        /** 거리와 분리: experimental 경사 reject 사유(거리 suspicious에 섞지 않음) */
+        val slopeExperimentalQuality: String?,
+        val slopeRejectReason: String?,
+        /** 9m+ 저신호 조합 시 재촬영 권고 */
+        val distanceRequireRetake: Boolean,
+        /** raw 거리 > 0 (하드 가드와 무관) */
+        val distanceRawPositive: Boolean,
+        /** [MeasurementFinalizationPolicy] 거리 최종 메트릭 상태 */
+        val distanceMetricStatus: String,
+        /** 하드 가드 실패 시 사유(통과 시 null) */
+        val distanceHardGuardReason: String?,
+        /** RESULT 전용: [MeasurementFinalizationPolicy.finalMeasurementFromUi] — 로그·JSON SSOT(재계산 금지). */
+        val finalMeasurementSsot: MeasurementFinalizationPolicy.FinalMeasurementResult?
     )
 
     fun feedbackSnapshot(ui: V31StateMachine.UiModel, extras: ActivityExtras): DistanceFeedbackSnapshot {
         val isFail = ui.engineState == V31StateMachine.State.FAIL
         val isResult = ui.engineState == V31StateMachine.State.RESULT
+        val finalMeas =
+            if (isResult) {
+                MeasurementFinalizationPolicy.finalMeasurementFromUi(ui)
+            } else {
+                null
+            }
         val finalD = ui.distanceMeters
-        val distanceOk = finalD.isFinite() && finalD > 0f
+        val rawDistanceOk = finalD.isFinite() && finalD > 0f
+        val distPolicy = finalMeas?.distance
+        val guardRejected =
+            isResult &&
+                distPolicy?.status == MeasurementFinalizationPolicy.MetricStatus.REJECTED
+        val distanceOk = rawDistanceOk && !guardRejected
+        val distanceMetricStatus =
+            if (isResult) {
+                distPolicy?.status?.name ?: "UNAVAILABLE"
+            } else {
+                if (rawDistanceOk) "VALID" else "UNAVAILABLE"
+            }
+        val distanceHardGuardReason =
+            if (guardRejected) distPolicy?.reason else null
 
         val ballFixRaw =
             if (ui.ballSampleValidHits != null && (ui.ballSampleValidHits ?: 0) > 0) "FIXED" else "OPEN"
@@ -189,7 +221,8 @@ object DistanceFieldTestLog {
                     distanceOk = distanceOk,
                     gapLarge = gapLarge,
                     abnormalPair = abnormalPair,
-                    spread = spread
+                    spread = spread,
+                    distancePolicy = distPolicy
                 )
             } else {
                 "ok" to "NONE"
@@ -203,8 +236,20 @@ object DistanceFieldTestLog {
                 primary = primary,
                 gapLarge = gapLarge,
                 spread = spread,
-                cls = cls
+                cls = cls,
+                vsAnchorM = vsAnchor
             )
+
+        val slopeExp = ui.slopeExperimentalResult
+        val distanceRequireRetake =
+            guardRejected ||
+                (
+                    isResult &&
+                        distanceOk &&
+                        finalD >= 9f &&
+                        (ui.multiRayProjectedCupPx ?: 999f) < 35f &&
+                        (spread ?: 0f) > 2.0f
+                    )
 
         val stage = distanceFailureStage(ui, isFail, cupFixSummary)
 
@@ -309,7 +354,14 @@ object DistanceFieldTestLog {
             cupLiveAlignAndGateSameFrame = ui.cupLiveWorldFrameTimestampNs != null,
             cupEndAnchorPositionSource = ui.cupEndAnchorPositionSource,
             cupEndAnchorVsLiveWorldXZM = ui.cupEndAnchorVsLiveWorldXZM,
-            debugBannerShort = banner
+            debugBannerShort = banner,
+            slopeExperimentalQuality = slopeExp?.quality,
+            slopeRejectReason = if (slopeExp?.quality == "rejected") slopeExp.rejectReason else null,
+            distanceRequireRetake = distanceRequireRetake,
+            distanceRawPositive = rawDistanceOk,
+            distanceMetricStatus = distanceMetricStatus,
+            distanceHardGuardReason = distanceHardGuardReason,
+            finalMeasurementSsot = finalMeas
         )
     }
 
@@ -369,9 +421,22 @@ object DistanceFieldTestLog {
         distanceOk: Boolean,
         gapLarge: Boolean,
         abnormalPair: AbnormalPlane,
-        spread: Float?
+        spread: Float?,
+        distancePolicy: MeasurementFinalizationPolicy.DistanceDecision?
     ): Pair<String, String> {
+        if (ui.engineState == V31StateMachine.State.RESULT) {
+            val d =
+                distancePolicy ?: MeasurementFinalizationPolicy.distanceDecisionFromUi(ui)
+            if (d.status == MeasurementFinalizationPolicy.MetricStatus.REJECTED) {
+                return "distance_failure" to (d.reason ?: "RETAKE_REQUIRED_TARGET_TOO_SMALL_OR_UNSTABLE")
+            }
+        }
         if (!distanceOk) return "distance_failure" to "DISTANCE_UNKNOWN"
+        val finalD = ui.distanceMeters
+        val proj = ui.multiRayProjectedCupPx
+        if (finalD >= 9f && (proj ?: 999f) < 35f && (spread ?: 0f) > 2.0f) {
+            return "degraded" to "DISTANCE_PLANE_SAMPLE_SPREAD_HIGH"
+        }
         if (ui.centerHitValid == false && ui.distanceLockLiveSource == "NONE") {
             return "degraded" to "DISTANCE_CENTER_HIT_INVALID"
         }
@@ -401,7 +466,8 @@ object DistanceFieldTestLog {
         primary: String?,
         gapLarge: Boolean,
         spread: Float?,
-        cls: String
+        cls: String,
+        vsAnchorM: Float?
     ): Pair<Boolean, String?> {
         if (!distanceOk) return false to null
         val meanPrior =
@@ -419,13 +485,18 @@ object DistanceFieldTestLog {
         ) {
             return true to "plane_intersection_far_with_small_projected_px"
         }
-        if (spread != null && spread > SPREAD_HIGH_M) return true to "high_sample_spread_cup"
+        val spreadSev = spread?.takeIf { it.isFinite() }?.let { spreadSeverity(it) } ?: SpreadSeverity.OK
+        if (spreadSev != SpreadSeverity.OK) return true to "high_sample_spread_cup"
         if (ui.multiRayCenterFallbackUsed == true) return true to "center_fallback_used"
         if ((ui.validSampleCount ?: 0) in 1..2) return true to "low_valid_sample_count"
         if (gapLarge) return true to "live_final_gap_large"
-        if (cls == "ok" && ui.slopeExperimentalResult?.quality == "rejected" && ui.distanceMeters > 5f) {
-            return true to "slope_rejected_but_long_distance"
-        }
+        if ((ui.multiRayProjectedCupPx ?: 999f) < 35f) return true to "small_projected_cup_px"
+        val dPlane = vsAnchorM ?: ui.planeIntersectionVsAnchorDeltaM
+        if ((dPlane ?: 0f) > 0.5f) return true to "plane_intersection_vs_anchor_delta_high"
+        val sig = ui.distanceLockLiveSigmaM
+        if (sig != null && sig.isFinite() && sig > 0.12f) return true to "live_sigma_high"
+        val rng = ui.distanceLockLiveRangeM
+        if (rng != null && rng.isFinite() && rng > 0.18f) return true to "live_range_high"
         return false to null
     }
 
@@ -637,7 +708,13 @@ object DistanceFieldTestLog {
         sb.append("\"cupLiveAlignAndGateSameFrame\":").append(snap.cupLiveAlignAndGateSameFrame).append(',')
         sb.append("\"cupEndAnchorPositionSource\":").append(jsonStr(snap.cupEndAnchorPositionSource, esc)).append(',')
         sb.append("\"cupEndAnchorVsLiveWorldXZM\":").append(n(snap.cupEndAnchorVsLiveWorldXZM)).append(',')
-        sb.append("\"debugBannerShort\":\"").append(esc(snap.debugBannerShort)).append("\"")
+        sb.append("\"debugBannerShort\":\"").append(esc(snap.debugBannerShort)).append("\",")
+        sb.append("\"slopeExperimentalQuality\":").append(jsonStr(snap.slopeExperimentalQuality, esc)).append(',')
+        sb.append("\"slopeRejectReason\":").append(jsonStr(snap.slopeRejectReason, esc)).append(',')
+        sb.append("\"distanceRequireRetake\":").append(snap.distanceRequireRetake).append(',')
+        sb.append("\"distanceRawPositive\":").append(snap.distanceRawPositive).append(',')
+        sb.append("\"distanceMetricStatus\":\"").append(esc(snap.distanceMetricStatus)).append("\",")
+        sb.append("\"distanceHardGuardReason\":").append(jsonStr(snap.distanceHardGuardReason, esc))
         sb.append('}')
     }
 
@@ -684,10 +761,23 @@ object DistanceFieldTestLog {
 
     private fun fmt(f: Float): String = String.format(Locale.US, "%.3f", f)
 
+    /** [classifySuspicious] 전용 — cup plane 샘플 spread(m) 임계 일원화. */
+    private enum class SpreadSeverity { OK, WARN, RETAKE }
+
+    private fun spreadSeverity(spreadMeters: Float): SpreadSeverity =
+        when {
+            spreadMeters > SPREAD_HIGH_M -> SpreadSeverity.RETAKE
+            spreadMeters > SPREAD_WARN_M -> SpreadSeverity.WARN
+            else -> SpreadSeverity.OK
+        }
+
     private const val GAP_LARGE_M = 0.30f
     private const val ANCHOR_RATIO_TOO_HIGH = 1.35f
     private const val ANCHOR_ABS_TOO_HIGH_M = 1.2f
     private const val ANCHOR_DELTA_SUSPICIOUS_M = 1.0f
     private const val TINY_PROJECTED_PX = 22f
+    /** spread “심각” 상한 — [spreadSeverity] RETAKE 및 [classifyResult] degraded와 동일 스케일. */
     private const val SPREAD_HIGH_M = 2.5f
+    /** spread “주의” 하한 — [spreadSeverity] WARN. */
+    private const val SPREAD_WARN_M = 1.5f
 }

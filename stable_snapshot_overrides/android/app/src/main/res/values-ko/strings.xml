@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PuttingCaddy+</string>
+    <string name="app_name">PuttingCaddy</string>
 
     <!-- Header -->
-    <string name="title_distance">PuttingCaddy+</string>
+    <string name="title_distance">PuttingCaddy</string>
     <string name="greeniq_subtitle_ready">Ready on Green</string>
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
-    <string name="greeniq_distance_hard_rejected">재측정</string>
     <!-- 골프 안내문구 (한국어 로케일) -->
     <string name="greeniq_hint_ball">Ball을 중앙에 맞추고 BALL을 누르세요</string>
     <string name="greeniq_hint_cup">컵을 화면 중앙 목표 링에 맞춘 뒤 CUP 버튼을 누르세요.\n컵이 작게 보이면 컵 쪽으로 이동해 다시 누르세요.</string>
@@ -129,6 +128,20 @@
     <string name="btn_measurement_data">측정data</string>
     <string name="title_measurement_data">측정 데이터</string>
     <string name="btn_reset">RESET</string>
+    <string name="practice_title">거리 반복 연습</string>
+    <string name="practice_start">이 거리로 연습</string>
+    <string name="practice_stop">연습 종료</string>
+    <string name="practice_target_placeholder">목표: --</string>
+    <string name="practice_current_placeholder">이번: --</string>
+    <string name="practice_error_placeholder">오차: --</string>
+    <string name="practice_stats_placeholder">성공 0 / 0</string>
+    <string name="practice_ready">연습 시작 버튼을 눌러주세요</string>
+    <string name="practice_success">성공</string>
+    <string name="practice_retry">다시 시도</string>
+    <string name="practice_target_format">목표: %1$s</string>
+    <string name="practice_current_format">이번: %1$s</string>
+    <string name="practice_error_format">오차: %1$s</string>
+    <string name="practice_stats_format">성공 %1$d / %2$d</string>
 
     <!-- Distance formats -->
     <string name="distance_format">%1$.2f %2$s</string>

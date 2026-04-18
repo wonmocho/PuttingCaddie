@@ -38,6 +38,10 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
         val gridEstimatedDistanceMeters: Float? = null,
         val gridProjectedCupPx: Float? = null,
         val centerFallbackUsed: Boolean? = null,
+        /** FAR precision boost: logical grid size (3 or 5). */
+        val samplingPlanGrid: Int? = null,
+        /** Policy label: intended temporal depth for logging (multi-tick merge는 후속). */
+        val samplingPlanTemporalFrames: Int? = null,
         // BALL only (gridCount==9): rejection reason when bestHit is null
         val ballSampleRejectionReason: String? = null
     )
@@ -346,17 +350,45 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
 
         // 3) Mode selection by distance and explicit far expansion request.
         // Policy: stop relying on ULTRA_LINE_5 alone; prefer spatial sampling in far range.
+        val farCupBoost =
+            !forceFar5x5 &&
+                (dMeters >= 6f ||
+                    (projectedCupPxView != null && projectedCupPxView.isFinite() && projectedCupPxView < 45f))
+        var samplingPlanTemporalFrames = 3
+        var forcedSpanPx: Float? = null
         val plan =
             when {
                 forceFar5x5 -> Plan("FAR_5x5", 5, 5, 0.65f)
                 dMeters < 1.0f -> Plan("NEAR_7x7", 7, 7, 0.80f)
                 dMeters < 3.0f -> Plan("MID_5x5", 5, 5, 0.70f)
+                farCupBoost &&
+                    projectedCupPxView != null &&
+                    projectedCupPxView.isFinite() &&
+                    projectedCupPxView < 30f -> {
+                    samplingPlanTemporalFrames = 6
+                    forcedSpanPx = 40f // (5-1) * 10px step target
+                    Plan("FAR_5x5_PX30", 5, 5, 0.60f)
+                }
+                farCupBoost &&
+                    projectedCupPxView != null &&
+                    projectedCupPxView.isFinite() &&
+                    projectedCupPxView < 45f -> {
+                    samplingPlanTemporalFrames = 4
+                    forcedSpanPx = 48f // (5-1) * 12px
+                    Plan("FAR_5x5_PX45", 5, 5, 0.60f)
+                }
+                farCupBoost -> {
+                    samplingPlanTemporalFrames = 3
+                    forcedSpanPx = 36f // (3-1) * 18px
+                    Plan("FAR_3x3_BOOST", 3, 3, 0.60f)
+                }
                 else -> Plan("FAR_3x3", 3, 3, 0.60f)
             }
 
         val maxSpanPx = (min(glW, glH) * 0.25f).coerceAtLeast(MIN_GRID_SPAN_PX)
         val spanCandidate =
-            (projectedCupPxView?.let { it * plan.spanRatio })
+            forcedSpanPx
+                ?: (projectedCupPxView?.let { it * plan.spanRatio })
                 ?: (2f * max(glW * offsetPercent, glH * offsetPercent))
 
         val minSpanForStepX = if (plan.gridX <= 1) 0f else MIN_STEP_PX * (plan.gridX - 1).toFloat()
@@ -461,7 +493,9 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
                 gridPlan = plan.name,
                 gridEstimatedDistanceMeters = dMeters,
                 gridProjectedCupPx = projectedCupPxView,
-                centerFallbackUsed = (fallbackHit != null)
+                centerFallbackUsed = (fallbackHit != null),
+                samplingPlanGrid = max(plan.gridX, plan.gridY),
+                samplingPlanTemporalFrames = samplingPlanTemporalFrames
             )
         }
 
@@ -530,7 +564,9 @@ class V31HitSampler(private val mapper: ScreenToViewMapper) {
             gridPlan = plan.name,
             gridEstimatedDistanceMeters = dMeters,
             gridProjectedCupPx = projectedCupPxView,
-            centerFallbackUsed = false
+            centerFallbackUsed = false,
+            samplingPlanGrid = max(plan.gridX, plan.gridY),
+            samplingPlanTemporalFrames = samplingPlanTemporalFrames
         )
     }
 

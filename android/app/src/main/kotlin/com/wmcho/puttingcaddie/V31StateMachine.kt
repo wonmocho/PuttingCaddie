@@ -172,6 +172,11 @@ class V31StateMachine(
         val multiRayEstimatedDistanceMeters: Float?,
         val multiRayProjectedCupPx: Float?,
         val multiRayCenterFallbackUsed: Boolean?,
+        /** FAR 샘플링 플랜 (로그/QA; [V31HitSampler.sampleCupPlaneMultiRay] 정책과 정합) */
+        val samplingPlanGrid: Int? = null,
+        val samplingPlanHalfSpanPx: Float? = null,
+        val samplingPlanStepPx: Float? = null,
+        val samplingPlanTemporalFrames: Int? = null,
         // Ball robustness diagnostics (START-only tuning)
         val ballGridMode: String?,
         val ballGridStepPx: Float?,
@@ -272,7 +277,57 @@ class V31StateMachine(
         /** END_LOCKED/RESULT: [SlopeInputProjection] 결과 (필드 검증 로그용). */
         val slopeProjectionSnapshot: SlopeInputProjection.Result? = null,
         /** 투영 좌표 기준 컵−볼 Y 차이(m): slopeCup.y − slopeBall.y */
-        val deltaYProjected: Float? = null
+        val deltaYProjected: Float? = null,
+        /** 컵 락 분리 관찰용(로그/JSON) — 락 로직 변경 없음 */
+        val cupLockPrimaryReason: String? = null,
+        val cupLockSecondaryReason: String? = null,
+        val cupLockOutcome: String? = null,
+        val cupSigmaMarginCm: Float? = null,
+        val cupMaxConsecutiveOkReached: Int? = null,
+        val cupConsecutiveRequired: Int? = null,
+        val cupElapsedStabilizingMs: Long? = null,
+        val cupProjectedPxEnd: Float? = null,
+        val cupValidSampleCountEnd: Int? = null,
+        val cupSoftHoldTriggered: Boolean? = null,
+        val cupSoftLockTriggered: Boolean? = null,
+        val cupTrackingStateEnd: String? = null,
+        val cupFarModeHoldActive: Boolean? = null,
+        val cupQualityGuardPassed: Boolean? = null,
+        val cupLiveSnapshotAvailable: Boolean? = null,
+        val cupEligibleLiveCupWorldAvailable: Boolean? = null,
+        /** 중심 조준 유지 + 내부 offset-anchor 재투영 컵 월드 */
+        val cupOffsetMode: String? = null,
+        val cupAnchorCandidateCount: Int? = null,
+        val cupAnchorBestVarianceCm: Float? = null,
+        val cupAnchorBestResidualCm: Float? = null,
+        val cupAnchorBestNormalY: Float? = null,
+        val cupAnchorBestOffsetDistCm: Float? = null,
+        val cupAnchorPlaneResidualCm: Float? = null,
+        val cupAnchorReprojectSuccess: Boolean? = null,
+        val cupAnchorFailureReason: String? = null,
+        val cupAnchorThrottleMode: String? = null,
+        val cupAnchorThrottleAgeMs: Long? = null,
+        val cupAnchorCacheHit: Boolean? = null,
+        val cupAnchorLastFailureReason: String? = null,
+        val cupAnchorCacheWasSuccess: Boolean? = null,
+        val cupAnchorCameraMovedM: Float? = null,
+        val cupAnchorCameraAngleMovedDeg: Float? = null,
+        val cupAnchorReprojectedAffectsDistance: Boolean? = null,
+        val cupAnchorReprojectedAffectsEndAnchor: Boolean? = null,
+        val cupAnchorReprojectedAffectsExperimentalSurface: Boolean? = null,
+        val cupAnchorDistanceFrameOfRef: String? = null,
+        val cupAnchorEndAnchorFrameOfRef: String? = null,
+        val cupAnchorExperimentalSurfaceFrameOfRef: String? = null,
+        val cupAnchorFrameOfRefMismatch: Boolean? = null,
+        val cupAnchorFrameOfRefMismatchReason: String? = null,
+        val cupAnchorQualityProbeStatus: String? = null,
+        val cupAnchorQualityInvalidateReason: String? = null,
+        val cupAnchorSelectedOffsetCm: Float? = null,
+        val cupAnchorSelectedOffsetScore: Float? = null,
+        val cupAnchorSelectedOffsetRankReason: String? = null,
+        val cupAnchorEligibleMinCm: Float? = null,
+        val cupAnchorEligibleMaxCm: Float? = null,
+        val cupAnchorLegacyDeltaCm: Float? = null
     )
 
     // v3.1 constants
@@ -374,10 +429,10 @@ class V31StateMachine(
     private val CUP_LOW_VALID_EARLY_FAIL_NS = 500_000_000L
     private val CUP_CAPTURE_PENDING_MAX_NS = 3_000_000_000L
     private val CUP_PROJECTED_PX_FORCE_FAR5 = 22f
-    private val CUP_PROJECTED_PX_CONDITIONAL_FAR5 = 24f
-    private val FAR_PRECISION_MODE_DISTANCE_M = 8.0f
-    private val FAR_PRECISION_MODE_ENTER_PROJECTED_PX = 24f
-    private val FAR_PRECISION_MODE_EXIT_PROJECTED_PX = 26f
+    private val CUP_PROJECTED_PX_CONDITIONAL_FAR5 = 45f
+    private val FAR_PRECISION_MODE_DISTANCE_M = 6.0f
+    private val FAR_PRECISION_MODE_ENTER_PROJECTED_PX = 45f
+    private val FAR_PRECISION_MODE_EXIT_PROJECTED_PX = 48f
     private val CUP_SIGMA_NEAR_RATIO = 1.10f
     private val CUP_SIGMA_NEAR_EXTRA_HOLD_NS = 250_000_000L
     private val CUP_SIGMA_SOFTPASS_RATIO = 1.12f
@@ -483,6 +538,20 @@ class V31StateMachine(
     private var cupSigmaNearHoldCount: Int = 0
     private var cupSigmaExtraHoldUsed: Boolean = false
     private var cupSigmaSoftPassLastLogNs: Long = 0L
+
+    // --- Cup lock field diagnostics (no threshold / lock logic changes) ---
+    private var cupLockDiagGateLogMs: Long = 0L
+    private var cupLockDiagTimelineLogMs: Long = 0L
+    private var cupLockDiagLastSigmaOk: Boolean? = null
+    private var cupLockDiagMaxConsecutiveOk: Int = 0
+    private var cupLockDiagSoftHoldTriggered: Boolean = false
+    private var cupLockDiagSoftLockTriggered: Boolean = false
+    private var cupLockDiagLastPrimary: String? = null
+    private var cupLockDiagLastSecondary: String? = null
+    private var lastCupLockOutcome: CupLockDiagnostics.CupLockOutcomeSummary? = null
+    /** 컵 LIVE 월드: center-aim + 우하단 offset anchor 재투영 경로 진단(JSON/로그) */
+    private var lastCupOffsetAnchorDiag: CupOffsetAnchorEstimator.Diagnostics? = null
+    private val cupOffsetAnchorCacheState = CupOffsetAnchorEstimator.CacheState()
     private var farPrecisionMode: Boolean = false
     private val cupCenterHistory = ArrayDeque<PointF>(5)
     private var cupFrozenCenter: PointF? = null
@@ -582,6 +651,10 @@ class V31StateMachine(
     private var lastMultiRayEstimatedDistanceMeters: Float? = null
     private var lastMultiRayProjectedCupPx: Float? = null
     private var lastMultiRayCenterFallbackUsed: Boolean? = null
+    private var lastSamplingPlanGrid: Int? = null
+    private var lastSamplingPlanHalfSpanPx: Float? = null
+    private var lastSamplingPlanStepPx: Float? = null
+    private var lastSamplingPlanTemporalFrames: Int? = null
     // Ball robustness state
     private val ballHitWindow = ArrayDeque<Boolean>(BALL_FIX_WINDOW_FRAMES)
     private var ballFixHitsInWindow: Int = 0
@@ -849,6 +922,8 @@ class V31StateMachine(
                         lastLiveCupWorldForDistance = null
                         lastLiveCupWorldFrameTimestampNs = null
                         lastLiveCupWorldUpdateNs = 0L
+                        lastCupOffsetAnchorDiag = null
+                        cupOffsetAnchorCacheState.reset()
                         capturedBallLiveHitWorldAtFinish = null
                         capturedCupLiveHitWorldAtFinish = null
                         capturedCupAnchorHitWorldBeforeSnap = null
@@ -997,6 +1072,13 @@ class V31StateMachine(
 
         // STOPPED => immediate FAIL
         if (tracking == TrackingState.STOPPED) {
+            logCupLockSessionEnd(
+                outcome = "TRACKING_STOPPED",
+                primary = "tracking_not_ok",
+                secondary = null,
+                nowNs = nowNs,
+                sample = null
+            )
             enterFail(FailReason.FAIL_TRACKING_STOPPED)
             return buildUi(nowNs, tracking, flashFail = true)
         }
@@ -1008,6 +1090,13 @@ class V31StateMachine(
             if (inStabilizing) {
                 if (pausedEnterNs == 0L) pausedEnterNs = nowNs
                 if (nowNs - pausedEnterNs >= PAUSED_GRACE_NS) {
+                    logCupLockSessionEnd(
+                        outcome = "TIMEOUT",
+                        primary = "tracking_not_ok",
+                        secondary = "paused_grace",
+                        nowNs = nowNs,
+                        sample = null
+                    )
                     enterFail(FailReason.FAIL_TIMEOUT)
                     return buildUi(nowNs, tracking, flashFail = true)
                 }
@@ -1104,10 +1193,12 @@ class V31StateMachine(
                             val ix = ox + (dirWorld[0] * t)
                             val iy = oy + (dirWorld[1] * t)
                             val iz = oz + (dirWorld[2] * t)
-                            val iPose = Pose.makeTranslation(ix, iy, iz)
+                            val legacyW = floatArrayOf(ix, iy, iz)
+                            val usedW = applyOffsetAnchorIfEnabled(frame, roiScreen, legacyW)
+                            val iPose = Pose.makeTranslation(usedW[0], usedW[1], usedW[2])
                             raw = distanceFromStartToPoseMeters(startAnchor!!.pose, iPose)
                             liveSource = LiveSource.PLANE_INTERSECTION
-                            lastLiveCupWorldForDistance = floatArrayOf(ix, iy, iz)
+                            lastLiveCupWorldForDistance = usedW.copyOf()
                             lastLiveCupWorldFrameTimestampNs = frame.timestamp
                             lastLiveCupWorldUpdateNs = nowNs
                         }
@@ -1127,10 +1218,13 @@ class V31StateMachine(
                         preferFarthestForDistance = true
                     )
                 if (centerHit != null) {
-                    raw = distanceFromStartToPoseMeters(startAnchor!!.pose, centerHit.hitPose)
                     liveSource = LiveSource.HITTEST_FALLBACK
                     val p = centerHit.hitPose
-                    lastLiveCupWorldForDistance = floatArrayOf(p.tx(), p.ty(), p.tz())
+                    val legacyW = floatArrayOf(p.tx(), p.ty(), p.tz())
+                    val usedW = applyOffsetAnchorIfEnabled(frame, roiScreen, legacyW)
+                    val iPose = Pose.makeTranslation(usedW[0], usedW[1], usedW[2])
+                    raw = distanceFromStartToPoseMeters(startAnchor!!.pose, iPose)
+                    lastLiveCupWorldForDistance = usedW.copyOf()
                     lastLiveCupWorldFrameTimestampNs = frame.timestamp
                     lastLiveCupWorldUpdateNs = nowNs
                 }
@@ -1173,6 +1267,8 @@ class V31StateMachine(
             lastLiveCupWorldForDistance = null
             lastLiveCupWorldFrameTimestampNs = null
             lastLiveCupWorldUpdateNs = 0L
+            lastCupOffsetAnchorDiag = null
+            cupOffsetAnchorCacheState.reset()
             resetLiveMedianWindow()
             resetLiveStabilityBuf()
         }
@@ -1196,12 +1292,20 @@ class V31StateMachine(
                     }
                 val cupLiveAlignForHitPick = cupLiveAlignForMultiRaySample()
                 // Cup FIX sampling: multi-ray 5x5 centered near screen center with Y offset and distance/Y guards.
+                val cupYOffsetRatio =
+                    if (MeasurementFinalizationPolicy.sessionTargetMode ==
+                        MeasurementFinalizationPolicy.TargetMode.BALL_ON_FLOOR
+                    ) {
+                        0f
+                    } else {
+                        CUP_CENTER_Y_OFFSET_RATIO
+                    }
                 var s =
                     sampler.sampleCupPlaneMultiRay(
                         frame = frame,
                         baseRoiScreen = cupSamplingRoi,
                         offsetPercent = CUP_OFFSET_PERCENT_PRIMARY,
-                        centerYOffsetRatio = CUP_CENTER_Y_OFFSET_RATIO,
+                        centerYOffsetRatio = cupYOffsetRatio,
                         gridSize = 5,
                         maxHitDistanceMeters = 12f,
                         yBelowCameraMeters = 0.1f,
@@ -1228,7 +1332,7 @@ class V31StateMachine(
                             frame = frame,
                             baseRoiScreen = cupSamplingRoi,
                             offsetPercent = CUP_OFFSET_PERCENT_PRIMARY,
-                            centerYOffsetRatio = CUP_CENTER_Y_OFFSET_RATIO,
+                            centerYOffsetRatio = cupYOffsetRatio,
                             gridSize = 5,
                             maxHitDistanceMeters = 18f,
                             yBelowCameraMeters = 0.05f,
@@ -1273,7 +1377,7 @@ class V31StateMachine(
                             frame = frame,
                             baseRoiScreen = cupSamplingRoi,
                             offsetPercent = CUP_OFFSET_PERCENT_RETRY,
-                            centerYOffsetRatio = CUP_CENTER_Y_OFFSET_RATIO,
+                            centerYOffsetRatio = cupYOffsetRatio,
                             gridSize = 5,
                             // 2nd pass only: widen distance cap + slightly relax Y filter for hit availability.
                             maxHitDistanceMeters = 18f,
@@ -1318,6 +1422,10 @@ class V31StateMachine(
                 lastMultiRayEstimatedDistanceMeters = s.gridEstimatedDistanceMeters
                 lastMultiRayProjectedCupPx = s.gridProjectedCupPx
                 lastMultiRayCenterFallbackUsed = s.centerFallbackUsed
+                lastSamplingPlanGrid = s.samplingPlanGrid
+                lastSamplingPlanHalfSpanPx = s.gridHalfSpanPx
+                lastSamplingPlanStepPx = s.gridStepPx
+                lastSamplingPlanTemporalFrames = s.samplingPlanTemporalFrames
                 if (debugLoggingEnabled && (state == State.AIM_END || state == State.STABILIZING_END) &&
                     nowNs - lastCupDetectStateLogNs >= 500_000_000L) {
                     lastCupDetectStateLogNs = nowNs
@@ -1344,6 +1452,10 @@ class V31StateMachine(
                 lastMultiRayEstimatedDistanceMeters = null
                 lastMultiRayProjectedCupPx = null
                 lastMultiRayCenterFallbackUsed = null
+                lastSamplingPlanGrid = null
+                lastSamplingPlanHalfSpanPx = null
+                lastSamplingPlanStepPx = null
+                lastSamplingPlanTemporalFrames = null
                 s
             }
 
@@ -1592,6 +1704,13 @@ class V31StateMachine(
                         )
                         cupCapturePendingStartNs = 0L
                         cupFrozenCenter = null
+                        logCupLockSessionEnd(
+                            outcome = "NO_VALID_HITS",
+                            primary = "not_enough_samples",
+                            secondary = "cup_low_valid_500ms",
+                            nowNs = nowNs,
+                            sample = sample
+                        )
                         enterFail(FailReason.FAIL_NO_VALID_HITS)
                         return buildUi(nowNs, tracking, sample, flashFail = true)
                     }
@@ -1624,6 +1743,13 @@ class V31StateMachine(
                         )
                         cupCapturePendingStartNs = 0L
                         cupFrozenCenter = null
+                        logCupLockSessionEnd(
+                            outcome = "TIMEOUT",
+                            primary = "timeout_other",
+                            secondary = "cup_pending_timeout_3s",
+                            nowNs = nowNs,
+                            sample = sample
+                        )
                         enterFail(FailReason.FAIL_TIMEOUT)
                         return buildUi(nowNs, tracking, sample, flashFail = true)
                     }
@@ -1704,6 +1830,7 @@ class V31StateMachine(
                     if (hit != null && validOk && projOk && sigmaNearOk) {
                         val cw = cupLiveWorldEligibleForEndCommit(nowNs)
                         if (cw != null) {
+                            cupLockDiagSoftLockTriggered = true
                             confirmLock(nowNs, hit, sample, cw, session)
                             buf.clear()
                             lastAimSample = null
@@ -1744,6 +1871,9 @@ class V31StateMachine(
                         "sigmaCurrent_cm=${lastSigmaUsedMeters?.let { "%.2f".format(it * 100) } ?: "null"} " +
                         "sigmaThreshold_cm=${lastSigmaMaxMeters?.let { "%.2f".format(it * 100) } ?: "null"} " +
                         "sigmaRelaxApplied=$sigmaRelaxApplied sigmaRelaxTier=$sigmaRelaxTier phase=STABILIZING_END")
+                }
+                if (state == State.STABILIZING_END) {
+                    logCupLockSessionEndStabilizingTimeout(nowNs, sample)
                 }
                 enterFail(FailReason.FAIL_TIMEOUT)
                 return buildUi(nowNs, tracking, sample, flashFail = true)
@@ -1799,6 +1929,15 @@ class V31StateMachine(
                     lastSigmaOkElapsedMsAtFail = if (sigmaOkStartNs > 0L) ((nowNs - sigmaOkStartNs) / 1_000_000L) else 0L
                     lastCupSigmaNearHoldCountAtFail = cupSigmaNearHoldCount
                     lastFailDetailCode = "NO_VALID_HITS"
+                    if (state == State.STABILIZING_END) {
+                        logCupLockSessionEnd(
+                            outcome = "NO_VALID_HITS",
+                            primary = "not_enough_samples",
+                            secondary = "stabilizing_insufficient_valid_hits",
+                            nowNs = nowNs,
+                            sample = sample
+                        )
+                    }
                     enterFail(FailReason.FAIL_NO_VALID_HITS)
                     return buildUi(nowNs, tracking, sample, flashFail = true)
                 }
@@ -1881,6 +2020,7 @@ class V31StateMachine(
                     }
                     val nearHoldElapsedNs = if (cupSigmaNearHoldStartNs > 0L) nowNs - cupSigmaNearHoldStartNs else 0L
                     if (!cupSigmaExtraHoldUsed && nearHoldElapsedNs < CUP_SIGMA_NEAR_EXTRA_HOLD_NS) {
+                        cupLockDiagSoftHoldTriggered = true
                         Log.d(
                             "V31StateMachine",
                             "CUP_SIGMA_NEAR_HOLD holdMs=${nearHoldElapsedNs / 1_000_000L} sigma=${"%.3f".format(sigmaUsed)} " +
@@ -1927,6 +2067,19 @@ class V31StateMachine(
                 }
 
                 val okElapsed = if (sigmaOkStartNs > 0L) (nowNs - sigmaOkStartNs) else 0L
+                if (state == State.STABILIZING_END) {
+                    emitCupLockStabilizingEndDiagnostics(
+                        nowNs = nowNs,
+                        tracking = tracking,
+                        sample = sample,
+                        stabilizingHit = stabilizingHit,
+                        sigmaUsed = sigmaUsed,
+                        sigmaMax = sigmaMax,
+                        sigmaOk = sigmaOk,
+                        sigmaOkConsecutive = sigmaOkConsecutive,
+                        okElapsedNs = okElapsed
+                    )
+                }
                 if (sigmaOkConsecutive >= LOCK_CONSEC_TICKS && okElapsed >= LOCK_TIME_GATE_NS) {
                     if (state == State.STABILIZING_END && isFirstMeasurementActive) {
                         val warmupElapsedNs = nowNs - firstMeasurementStartNs
@@ -2218,6 +2371,8 @@ class V31StateMachine(
         lastSigmaMaxMeters = null
         buf.clear()
         resetEndDisplayBuf()
+        resetCupLockFieldDiagnosticsForNewEndAttempt()
+        cupOffsetAnchorCacheState.reset()
 
         val start = startAnchor?.pose
         fixedDEstMeters =
@@ -2374,6 +2529,13 @@ class V31StateMachine(
                 endAnchorCreatedAtMs = System.currentTimeMillis()
                 state = State.END_LOCKED
                 endLockedAtNs = nowNs
+                logCupLockSessionEnd(
+                    outcome = "LOCKED",
+                    primary = "ok",
+                    secondary = null,
+                    nowNs = nowNs,
+                    sample = endLockSample
+                )
                 Log.i(
                     "MEASUREMENT_CUP_END",
                     "anchorSrc=LIVE_DISTANCE_WORLD liveWorld_m=(${liveW[0]},${liveW[1]},${liveW[2]}) " +
@@ -2562,6 +2724,8 @@ class V31StateMachine(
         cupSigmaNearHoldCount = 0
         cupSigmaExtraHoldUsed = false
         cupSigmaSoftPassLastLogNs = 0L
+        resetCupLockFieldDiagnosticsForNewEndAttempt()
+        lastCupLockOutcome = null
         farPrecisionMode = false
         cupFrozenCenter = null
         resetCupCenterHistory()
@@ -2630,6 +2794,8 @@ class V31StateMachine(
         lastLiveCupWorldForDistance = null
         lastLiveCupWorldFrameTimestampNs = null
         lastLiveCupWorldUpdateNs = 0L
+        lastCupOffsetAnchorDiag = null
+        cupOffsetAnchorCacheState.reset()
         capturedBallLiveHitWorldAtFinish = null
         capturedCupLiveHitWorldAtFinish = null
         capturedCupAnchorHitWorldBeforeSnap = null
@@ -2648,6 +2814,7 @@ class V31StateMachine(
         lastMultiRayEstimatedDistanceMeters = null
         lastMultiRayProjectedCupPx = null
         lastMultiRayCenterFallbackUsed = null
+        MeasurementFinalizationPolicy.endSession()
         ballDiagGridMode = null
         ballDiagGridStepPx = null
         ballDiagSampleTotalPoints = null
@@ -2753,6 +2920,262 @@ class V31StateMachine(
         return enoughHits && noCenterOnlyFallback
     }
 
+    private fun resetCupLockFieldDiagnosticsForNewEndAttempt() {
+        cupLockDiagGateLogMs = 0L
+        cupLockDiagTimelineLogMs = 0L
+        cupLockDiagLastSigmaOk = null
+        cupLockDiagMaxConsecutiveOk = 0
+        cupLockDiagSoftHoldTriggered = false
+        cupLockDiagSoftLockTriggered = false
+        cupLockDiagLastPrimary = null
+        cupLockDiagLastSecondary = null
+    }
+
+    private fun logCupLockSessionEndStabilizingTimeout(nowNs: Long, sample: V31HitSampler.Sample) {
+        val (p, s) = CupLockDiagnostics.normalizeFromFailDetail(lastFailDetailCode)
+        logCupLockSessionEnd(
+            outcome = "TIMEOUT",
+            primary = p,
+            secondary = s,
+            nowNs = nowNs,
+            sample = sample
+        )
+    }
+
+    private fun logCupLockSessionEnd(
+        outcome: String,
+        primary: String,
+        secondary: String?,
+        nowNs: Long,
+        sample: V31HitSampler.Sample?
+    ) {
+        val totalMs =
+            if (stabilizingEnterNs > 0L) {
+                ((nowNs - stabilizingEnterNs) / 1_000_000L).coerceAtLeast(0L)
+            } else {
+                0L
+            }
+        val farHoldActive =
+            farModeHoldStartNs != 0L && (nowNs - farModeHoldStartNs) < FAR_MODE_EXTRA_HOLD_NS
+        val liveSnapAvail =
+            liveSource == LiveSource.PLANE_INTERSECTION &&
+                centerHitValid == true &&
+                liveRawMeters != null &&
+                liveRawMeters!!.isFinite() &&
+                liveSmoothedMeters.isFinite() &&
+                liveSmoothedMeters > 0f
+        val vh = sample?.validHits ?: (lastValidSampleCount ?: 0)
+        val cf = sample?.centerFallbackUsed == true
+        val qualityPassed =
+            vh >= CUP_LOCK_MIN_VALID_SAMPLES &&
+                !(cf && vh < CUP_LOCK_FALLBACK_SAFE_MIN_SAMPLES)
+        val eligibleLive = cupLiveWorldEligibleForEndCommit(nowNs) != null
+        val summ =
+            CupLockDiagnostics.CupLockOutcomeSummary(
+                outcome = outcome,
+                primaryReason = primary,
+                secondaryReason = secondary,
+                lastSigmaUsedMeters = lastSigmaUsedMeters,
+                lastSigmaMaxMeters = lastSigmaMaxMeters,
+                maxConsecutiveOkReached = cupLockDiagMaxConsecutiveOk,
+                elapsedTotalMs = totalMs,
+                projectedCupPxAtEnd = sample?.gridProjectedCupPx ?: lastMultiRayProjectedCupPx,
+                validSampleCountAtEnd = vh,
+                softHoldTriggered = cupLockDiagSoftHoldTriggered,
+                softLockTriggered = cupLockDiagSoftLockTriggered,
+                farModeHoldActive = farHoldActive,
+                qualityGuardPassed = qualityPassed,
+                liveSnapshotAvailable = liveSnapAvail,
+                eligibleLiveCupWorldAvailable = eligibleLive,
+                trackingStateEnd = lastTickTrackingStateName
+            )
+        lastCupLockOutcome = summ
+        Log.i("CUP_LOCK_DIAG", CupLockDiagnostics.formatOutcomeSummaryLine(summ))
+        Log.i(
+            "CUP_LOCK_DIAG",
+            CupLockDiagnostics.formatLockSummaryLine(
+                outcome = outcome,
+                primary = primary,
+                secondary = secondary,
+                sigmaUsedM = lastSigmaUsedMeters,
+                sigmaMaxM = lastSigmaMaxMeters,
+                maxConsec = cupLockDiagMaxConsecutiveOk,
+                consecRequired = LOCK_CONSEC_TICKS,
+                px = sample?.gridProjectedCupPx ?: lastMultiRayProjectedCupPx,
+                validHits = vh,
+                softHold = cupLockDiagSoftHoldTriggered,
+                softLock = cupLockDiagSoftLockTriggered,
+                farModeHold = farHoldActive,
+                qualityPassed = qualityPassed,
+                liveSnap = liveSnapAvail,
+                eligibleLive = eligibleLive
+            )
+        )
+    }
+
+    private fun emitCupLockStabilizingEndDiagnostics(
+        nowNs: Long,
+        tracking: TrackingState,
+        sample: V31HitSampler.Sample,
+        stabilizingHit: HitResult?,
+        sigmaUsed: Float,
+        sigmaMax: Float,
+        sigmaOk: Boolean,
+        sigmaOkConsecutive: Int,
+        okElapsedNs: Long
+    ) {
+        if (stabilizingHit == null) return
+        cupLockDiagMaxConsecutiveOk = max(cupLockDiagMaxConsecutiveOk, sigmaOkConsecutive)
+        val trackingOk = tracking == TrackingState.TRACKING
+        val sigmaComputed = sigmaUsed.isFinite() && sigmaMax.isFinite()
+        val sigmaMode = if (axisMode == AxisMode.XZ) "sigmaXZ" else "sigmaXYZ"
+        val timeGateOkFlag = sigmaOkConsecutive >= LOCK_CONSEC_TICKS && okElapsedNs >= LOCK_TIME_GATE_NS
+        val elapsedStabMs = (nowNs - stabilizingEnterNs) / 1_000_000L
+
+        val cupValidSampleCount = sample.validHits
+        val centerFallbackUsed = sample.centerFallbackUsed == true
+        val qualityBlocked =
+            cupValidSampleCount < CUP_LOCK_MIN_VALID_SAMPLES ||
+                (centerFallbackUsed && cupValidSampleCount < CUP_LOCK_FALLBACK_SAFE_MIN_SAMPLES)
+
+        val liveRaw = liveRawMeters
+        val liveEma = liveSmoothedMeters
+        val liveReady =
+            liveSource == LiveSource.PLANE_INTERSECTION &&
+                centerHitValid == true &&
+                liveRaw != null &&
+                liveRaw.isFinite() &&
+                liveEma.isFinite() &&
+                liveEma > 0f
+        val liveSnapFriction =
+            liveReady && run {
+                val diff = abs(liveRaw!! - liveEma)
+                val diffThreshold = max(LIVE_SNAPSHOT_GUARD_BASE_DIFF_M, liveEma * LIVE_SNAPSHOT_GUARD_RELATIVE_RATIO)
+                diff > diffThreshold
+            }
+
+        val cupFixDist =
+            startAnchor?.pose?.let { s ->
+                val lw = lastLiveCupWorldForDistance
+                if (lw != null) {
+                    val p = Pose.makeTranslation(lw[0], lw[1], lw[2])
+                    distanceMeters(s, p)
+                } else {
+                    distanceMeters(s, stabilizingHit.hitPose)
+                }
+            }
+        val liveMedian5 = liveMedian5OrNaN()
+        val farMode =
+            isFarMode(
+                cupDistanceFromCameraMeters = stabilizingHit.distance,
+                projectedCupPx = sample.gridProjectedCupPx,
+                plan = sample.gridPlan
+            )
+        val farHoldWouldBlock =
+            farMode && run {
+                val liveMedianValid = liveMedian5.isFinite() && liveMedian5 > 0f
+                val cupFixValid = cupFixDist != null && cupFixDist.isFinite() && cupFixDist > 0f
+                if (!liveMedianValid || !cupFixValid) {
+                    true
+                } else {
+                    abs(liveMedian5 - cupFixDist!!) > FAR_MODE_MAX_LIVE_CUP_DIFF_M
+                }
+            }
+
+        val gatedReady = sigmaOk && sigmaOkConsecutive >= LOCK_CONSEC_TICKS && okElapsedNs >= LOCK_TIME_GATE_NS
+        val warmupBlock =
+            gatedReady && isFirstMeasurementActive && (nowNs - firstMeasurementStartNs) < FIRST_MEAS_WARMUP_NS
+        val sigmaRatio =
+            if (sigmaUsed.isFinite() && sigmaMax.isFinite() && sigmaMax > 1e-6f) sigmaUsed / sigmaMax else 0f
+        val firstSigmaBlock =
+            gatedReady &&
+                isFirstMeasurementActive &&
+                !warmupBlock &&
+                sigmaRatio >= FIRST_MEAS_SIGMA_GUARD_RATIO
+
+        val eligibleLive = cupLiveWorldEligibleForEndCommit(nowNs) != null
+
+        val prevPrimary = cupLockDiagLastPrimary
+        val prevSecondary = cupLockDiagLastSecondary
+        val (primary, secondary) =
+            CupLockDiagnostics.classifyCupLockBlockCascade(
+                CupLockDiagnostics.CascadeInput(
+                    trackingOk = trackingOk,
+                    bufSize = buf.size,
+                    fixedMinSamples = fixedMinSamples,
+                    sigmaComputed = sigmaComputed,
+                    sigmaOk = sigmaOk,
+                    consecutiveOkCount = sigmaOkConsecutive,
+                    consecutiveRequired = LOCK_CONSEC_TICKS,
+                    okElapsedNs = okElapsedNs,
+                    lockTimeGateNs = LOCK_TIME_GATE_NS,
+                    firstMeasWarmupBlocking = warmupBlock,
+                    firstSigmaGuardBlocking = firstSigmaBlock,
+                    cupQualityBlocked = gatedReady && qualityBlocked,
+                    liveSnapshotGuardWouldBlock = gatedReady && !qualityBlocked && liveSnapFriction,
+                    farModeHoldWouldBlock = gatedReady && !qualityBlocked && !liveSnapFriction && farHoldWouldBlock,
+                    eligibleLiveCupWorld = eligibleLive,
+                    projectedCupPx = sample.gridProjectedCupPx,
+                    aimMinProjectedPx = CUP_AIM_READY_MIN_PROJECTED_PX
+                )
+            )
+        cupLockDiagLastPrimary = primary
+        cupLockDiagLastSecondary = secondary
+
+        val tsMs = System.currentTimeMillis()
+        val sessionId = slopeTestSessionId?.trim().orEmpty()
+        if (tsMs - cupLockDiagGateLogMs >= CupLockDiagnostics.GATE_SNAPSHOT_MIN_INTERVAL_MS ||
+            primary != prevPrimary ||
+            secondary != prevSecondary
+        ) {
+            cupLockDiagGateLogMs = tsMs
+            if (primary != prevPrimary || secondary != prevSecondary) {
+                Log.i("CUP_LOCK_DIAG", CupLockDiagnostics.formatBlockReasonLine(primary, secondary, lastFailDetailCode))
+            }
+            Log.i(
+                "CUP_LOCK_DIAG",
+                CupLockDiagnostics.formatGateSnapshotLine(
+                    sessionId = sessionId,
+                    timestampMs = tsMs,
+                    state = state.name,
+                    fixedDEstM = fixedDEstMeters,
+                    projectedCupPx = sample.gridProjectedCupPx,
+                    validSampleCount = sample.validHits,
+                    sigmaUsedM = if (sigmaComputed) sigmaUsed else null,
+                    sigmaMaxM = if (sigmaComputed) sigmaMax else null,
+                    sigmaMode = sigmaMode,
+                    sigmaComputed = sigmaComputed,
+                    trackingOk = trackingOk,
+                    timeGateOk = timeGateOkFlag,
+                    consecutiveOk = sigmaOkConsecutive,
+                    consecutiveRequired = LOCK_CONSEC_TICKS,
+                    elapsedStabMs = elapsedStabMs,
+                    lockTimeGateMs = LOCK_TIME_GATE_NS / 1_000_000L,
+                    primary = primary,
+                    secondary = secondary
+                )
+            )
+        }
+
+        val sigmaOkChanged = cupLockDiagLastSigmaOk != sigmaOk
+        cupLockDiagLastSigmaOk = sigmaOk
+        if (sigmaOkChanged || tsMs - cupLockDiagTimelineLogMs >= CupLockDiagnostics.SIGMA_TIMELINE_MIN_INTERVAL_MS) {
+            cupLockDiagTimelineLogMs = tsMs
+            Log.i(
+                "CUP_LOCK_DIAG",
+                CupLockDiagnostics.formatTimelineLine(
+                    elapsedMs = elapsedStabMs,
+                    sigmaUsedM = if (sigmaComputed) sigmaUsed else null,
+                    sigmaMaxM = if (sigmaComputed) sigmaMax else null,
+                    sigmaOk = sigmaOk,
+                    consecutiveOk = sigmaOkConsecutive,
+                    projectedCupPx = sample.gridProjectedCupPx,
+                    validSampleCount = sample.validHits
+                )
+            )
+        }
+    }
+
     private fun sigmaMax(dMeters: Float): Float {
         val raw = a + (b * dMeters)
         return raw.coerceIn(sigmaMin, sigmaCap)
@@ -2773,6 +3196,29 @@ class V31StateMachine(
     }
 
     private fun world3FromPose(p: Pose): FloatArray = floatArrayOf(p.tx(), p.ty(), p.tz())
+
+    /**
+     * 컵 중심 레이를 유지한 채 우하단 sector ground 후보로 local plane을 잡고, 재투영한 월드 점을 반환.
+     * 실패 시 [legacyWorld] 그대로. (offset anchor 월드는 최종 wp로 쓰이지 않음)
+     */
+    private fun applyOffsetAnchorIfEnabled(frame: Frame, roi: RectF, legacyWorld: FloatArray): FloatArray {
+        val (world, diag) =
+            CupOffsetAnchorEstimator.resolveFinalCupWorldPointWithThrottle(
+                state = cupOffsetAnchorCacheState,
+                frame = frame,
+                sampler = sampler,
+                cupCenterPx = PointF(roi.centerX(), roi.centerY()),
+                projectedCupPx = lastMultiRayProjectedCupPx ?: 40f,
+                centerWorldLegacy = legacyWorld,
+                trackingState = frame.camera.trackingState,
+                rayDirYMin = LIVE_RAYDIR_Y_EPS,
+                maxRayDistanceM = LIVE_MAX_HIT_DISTANCE_M,
+                distanceM = fixedDEstMeters,
+                farMode = isFarMode(fixedDEstMeters, lastMultiRayProjectedCupPx, lastMultiRayPlan)
+            )
+        lastCupOffsetAnchorDiag = diag
+        return world
+    }
 
     /**
      * 컵 END anchor freeze용 live world.
@@ -3299,6 +3745,115 @@ class V31StateMachine(
         val holdSigmaCm = cupHoldSigmaMeters?.let { it * 100f }
         val holdMaxCm = if (cupHoldStartNs > 0L) (cupHoldMaxDevMeters * 100f) else null
 
+        val liveSnapAvailUi =
+            liveSource == LiveSource.PLANE_INTERSECTION &&
+                centerHitValid == true &&
+                liveRawMeters != null &&
+                liveRawMeters!!.isFinite() &&
+                liveSmoothedMeters.isFinite() &&
+                liveSmoothedMeters > 0f
+        val qualityPassedUi =
+            vh >= CUP_LOCK_MIN_VALID_SAMPLES &&
+                !((sample?.centerFallbackUsed == true) && vh < CUP_LOCK_FALLBACK_SAFE_MIN_SAMPLES)
+        val farHoldUiStab =
+            farModeHoldStartNs != 0L && (nowNs - farModeHoldStartNs) < FAR_MODE_EXTRA_HOLD_NS
+        val eligibleLiveUiStab = cupLiveWorldEligibleForEndCommit(nowNs) != null
+
+        val cupSigmaMarginCmVal =
+            if (lastSigmaUsedMeters != null && lastSigmaMaxMeters != null &&
+                lastSigmaUsedMeters!!.isFinite() && lastSigmaMaxMeters!!.isFinite()
+            ) {
+                (lastSigmaMaxMeters!! - lastSigmaUsedMeters!!) * 100f
+            } else {
+                null
+            }
+        val o = lastCupLockOutcome
+        val terminalCupDiag = state == State.FAIL || state == State.RESULT || state == State.END_LOCKED
+        val cupLockPrimaryUi =
+            when {
+                state == State.STABILIZING_END -> cupLockDiagLastPrimary
+                terminalCupDiag -> o?.primaryReason
+                else -> null
+            }
+        val cupLockSecondaryUi =
+            when {
+                state == State.STABILIZING_END -> cupLockDiagLastSecondary
+                terminalCupDiag -> o?.secondaryReason
+                else -> null
+            }
+        val cupLockOutcomeUi = if (terminalCupDiag) o?.outcome else null
+        val cupMaxConsecUi =
+            when {
+                state == State.STABILIZING_END -> cupLockDiagMaxConsecutiveOk
+                terminalCupDiag -> o?.maxConsecutiveOkReached ?: cupLockDiagMaxConsecutiveOk
+                else -> null
+            }
+        val cupConsecReqUi =
+            if (state == State.STABILIZING_END || terminalCupDiag) LOCK_CONSEC_TICKS else null
+        val cupElapsedStabUi: Long? =
+            when {
+                state == State.STABILIZING_END && stabilizingEnterNs > 0L ->
+                    ((nowNs - stabilizingEnterNs) / 1_000_000L).coerceAtLeast(0L)
+                terminalCupDiag -> o?.elapsedTotalMs
+                else -> null
+            }
+        val cupProjPxEndUi: Float? =
+            when {
+                state == State.STABILIZING_END -> sample?.gridProjectedCupPx ?: lastMultiRayProjectedCupPx
+                terminalCupDiag -> o?.projectedCupPxAtEnd ?: sample?.gridProjectedCupPx ?: lastMultiRayProjectedCupPx
+                else -> null
+            }
+        val cupValidEndUi: Int? =
+            when {
+                state == State.STABILIZING_END -> vh
+                terminalCupDiag -> o?.validSampleCountAtEnd ?: vh
+                else -> null
+            }
+        val cupSoftHoldUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> cupLockDiagSoftHoldTriggered
+                terminalCupDiag -> o?.softHoldTriggered
+                else -> null
+            }
+        val cupSoftLockUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> cupLockDiagSoftLockTriggered
+                terminalCupDiag -> o?.softLockTriggered
+                else -> null
+            }
+        val cupTrackingEndUi: String? =
+            when {
+                state == State.STABILIZING_END -> tracking.name
+                terminalCupDiag -> o?.trackingStateEnd
+                else -> null
+            }
+        val cupFarHoldUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> farHoldUiStab
+                terminalCupDiag -> o?.farModeHoldActive
+                else -> null
+            }
+        val cupQualityPassedUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> qualityPassedUi
+                terminalCupDiag -> o?.qualityGuardPassed
+                else -> null
+            }
+        val cupLiveSnapUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> liveSnapAvailUi
+                terminalCupDiag -> o?.liveSnapshotAvailable
+                else -> null
+            }
+        val cupEligibleUi: Boolean? =
+            when {
+                state == State.STABILIZING_END -> eligibleLiveUiStab
+                terminalCupDiag -> o?.eligibleLiveCupWorldAvailable
+                else -> null
+            }
+
+        val dOff = lastCupOffsetAnchorDiag
+
         val uiModel = UiModel(
             engineState = state,
             distanceMeters = distanceMeters,
@@ -3351,6 +3906,10 @@ class V31StateMachine(
             multiRayEstimatedDistanceMeters = lastMultiRayEstimatedDistanceMeters,
             multiRayProjectedCupPx = lastMultiRayProjectedCupPx,
             multiRayCenterFallbackUsed = lastMultiRayCenterFallbackUsed,
+            samplingPlanGrid = lastSamplingPlanGrid,
+            samplingPlanHalfSpanPx = lastSamplingPlanHalfSpanPx,
+            samplingPlanStepPx = lastSamplingPlanStepPx,
+            samplingPlanTemporalFrames = lastSamplingPlanTemporalFrames,
             ballGridMode = ballDiagGridMode,
             ballGridStepPx = ballDiagGridStepPx,
             ballSampleTotalPoints = ballDiagSampleTotalPoints,
@@ -3452,7 +4011,55 @@ class V31StateMachine(
             cupEndAnchorVsLiveWorldXZM =
                 if (state == State.END_LOCKED || state == State.RESULT) capturedCupEndAnchorVsLiveWorldXZM else null,
             slopeProjectionSnapshot = slopeProjected,
-            deltaYProjected = slopeProjected?.let { it.slopeCup[1] - it.slopeBall[1] }
+            deltaYProjected = slopeProjected?.let { it.slopeCup[1] - it.slopeBall[1] },
+            cupLockPrimaryReason = cupLockPrimaryUi,
+            cupLockSecondaryReason = cupLockSecondaryUi,
+            cupLockOutcome = cupLockOutcomeUi,
+            cupSigmaMarginCm = cupSigmaMarginCmVal,
+            cupMaxConsecutiveOkReached = cupMaxConsecUi,
+            cupConsecutiveRequired = cupConsecReqUi,
+            cupElapsedStabilizingMs = cupElapsedStabUi,
+            cupProjectedPxEnd = cupProjPxEndUi,
+            cupValidSampleCountEnd = cupValidEndUi,
+            cupSoftHoldTriggered = cupSoftHoldUi,
+            cupSoftLockTriggered = cupSoftLockUi,
+            cupTrackingStateEnd = cupTrackingEndUi,
+            cupFarModeHoldActive = cupFarHoldUi,
+            cupQualityGuardPassed = cupQualityPassedUi,
+            cupLiveSnapshotAvailable = cupLiveSnapUi,
+            cupEligibleLiveCupWorldAvailable = cupEligibleUi,
+            cupOffsetMode = dOff?.mode,
+            cupAnchorCandidateCount = dOff?.candidateCount,
+            cupAnchorBestVarianceCm = dOff?.bestVarianceCm,
+            cupAnchorBestResidualCm = dOff?.bestResidualCm,
+            cupAnchorBestNormalY = dOff?.bestNormalY,
+            cupAnchorBestOffsetDistCm = dOff?.bestOffsetDistCm,
+            cupAnchorPlaneResidualCm = dOff?.planeResidualCm,
+            cupAnchorReprojectSuccess = dOff?.reprojectSuccess,
+            cupAnchorFailureReason = dOff?.failureReason,
+            cupAnchorThrottleMode = dOff?.throttleMode,
+            cupAnchorThrottleAgeMs = dOff?.throttleAgeMs,
+            cupAnchorCacheHit = dOff?.cacheHit,
+            cupAnchorLastFailureReason = dOff?.failureReason,
+            cupAnchorCacheWasSuccess = dOff?.cacheWasSuccess,
+            cupAnchorCameraMovedM = dOff?.cameraTranslationDeltaM,
+            cupAnchorCameraAngleMovedDeg = dOff?.cameraAngleDeltaDeg,
+            cupAnchorReprojectedAffectsDistance = dOff?.reprojectedAffectsDistance,
+            cupAnchorReprojectedAffectsEndAnchor = dOff?.reprojectedAffectsEndAnchor,
+            cupAnchorReprojectedAffectsExperimentalSurface = dOff?.reprojectedAffectsExperimentalSurface,
+            cupAnchorDistanceFrameOfRef = dOff?.distanceFrameOfRef,
+            cupAnchorEndAnchorFrameOfRef = dOff?.endAnchorFrameOfRef,
+            cupAnchorExperimentalSurfaceFrameOfRef = dOff?.experimentalSurfaceFrameOfRef,
+            cupAnchorFrameOfRefMismatch = dOff?.frameOfRefMismatch,
+            cupAnchorFrameOfRefMismatchReason = dOff?.frameOfRefMismatchReason,
+            cupAnchorQualityProbeStatus = dOff?.qualityProbeStatus,
+            cupAnchorQualityInvalidateReason = dOff?.qualityInvalidateReason,
+            cupAnchorSelectedOffsetCm = dOff?.selectedOffsetCm,
+            cupAnchorSelectedOffsetScore = dOff?.selectedOffsetScore,
+            cupAnchorSelectedOffsetRankReason = dOff?.selectedOffsetRankReason,
+            cupAnchorEligibleMinCm = dOff?.cupAnchorEligibleMinCm,
+            cupAnchorEligibleMaxCm = dOff?.cupAnchorEligibleMaxCm,
+            cupAnchorLegacyDeltaCm = dOff?.cupAnchorLegacyDeltaCm
         )
         if (state == State.RESULT && lastEngineStateForSlopeFieldLog != State.RESULT) {
             SlopeFieldTestLog.emitOnResult(

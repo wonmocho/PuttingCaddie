@@ -53,3 +53,9 @@ launch_version_extracted/
 
 # Local release artifact (no extension)
 PuttingCaddy_*
+
+# Legacy: stable export goes to sibling PuttingCaddy (Plus repo folder: PuttingCaddyPlus)
+puttingcaddy_stable_403/
+
+# Local Gradle cache under packaging overrides (must not commit)
+stable_snapshot_overrides/android/.gradle/

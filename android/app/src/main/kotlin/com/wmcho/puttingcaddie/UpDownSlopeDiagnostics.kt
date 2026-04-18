@@ -87,7 +87,9 @@ fun buildUpDownCandidateTrace(ui: V31StateMachine.UiModel, gr: SlopeFieldTestLog
     val log = ui.sharedP3Log
     val shared = ui.experimentalSharedSlope
     val p1 = ui.slopeDebugInfo
+    val exp = ui.slopeExperimentalResult
     val candidates = buildList {
+        if (exp != null && exp.quality == "valid" && exp.forwardPct != null) add("EXPERIMENTAL")
         if (shared != null && shared.blockedReason == null && shared.quality == "valid") add("SHARED")
         if (log != null && (log.quality == "GOOD" || log.quality == "DEGRADED" || log.finalForwardPct != null)) {
             add("SHARED_P3")

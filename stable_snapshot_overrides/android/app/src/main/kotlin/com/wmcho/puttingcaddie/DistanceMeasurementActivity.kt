@@ -144,6 +144,16 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private lateinit var btnSettings: ImageButton
     private lateinit var layoutProCta: View
     private lateinit var btnResultData: android.widget.Button
+    private lateinit var practicePanel: View
+    private lateinit var practiceTargetText: TextView
+    private lateinit var practiceCurrentText: TextView
+    private lateinit var practiceErrorText: TextView
+    private lateinit var practiceResultText: TextView
+    private lateinit var practiceStatsText: TextView
+    private lateinit var practiceStartButton: MaterialButton
+    private lateinit var practiceStopButton: MaterialButton
+    private val practiceModeController = PracticeModeController()
+    private var latestStableDistanceMeters: Float? = null
 
     // --- v3.1 UI overlay (ViewFinder) ---
     private var viewFinder: ViewFinderView? = null
@@ -229,7 +239,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private var cupMultiRayCenterFallbackUsed: Boolean? = null
 
     // Field test tags (persisted)
-    private val KEY_TEST_DISTANCE_GROUP = "test_distance_group" // "3m" | "6m" | "9m" (레거시 2m/5m/10m 호환)
+    private val KEY_TEST_DISTANCE_GROUP = "test_distance_group" // "2m" | "5m" | "10m"
     private val KEY_TEST_GROUND_TRUTH_M = "test_ground_truth_m"
     private val KEY_TEST_LIGHT = "test_light_condition" // SUNNY|CLOUDY|SHADE
     private val KEY_TEST_NOTES = "test_notes"
@@ -239,8 +249,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     private val KEY_TEST_REPEAT_INDEX = "test_repeat_index"
     /** 시나리오 라벨 (flat, uphill_lateral 등, optional) */
     private val KEY_TEST_TARGET_SCENARIO = "test_target_scenario"
-    /** cup_standard | ball_on_floor — 세션 시작 시 고정 ([MeasurementFinalizationPolicy]) */
-    private val KEY_MEASUREMENT_TARGET_MODE = "measurement_target_mode"
 
     // --- Feedback / survey (no server; email only) ---
     private val feedbackEmailTo = "wonmocho62@gmail.com" // v1: fixed; replace later with support@...
@@ -367,6 +375,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         btnZoomMinus = findViewById(R.id.btnZoomMinus)
         layoutProCta = findViewById(R.id.layout_pro_cta)
         btnResultData = findViewById(R.id.btn_result_data)
+        practicePanel = findViewById(R.id.practicePanel)
+        practiceTargetText = findViewById(R.id.practiceTargetText)
+        practiceCurrentText = findViewById(R.id.practiceCurrentText)
+        practiceErrorText = findViewById(R.id.practiceErrorText)
+        practiceResultText = findViewById(R.id.practiceResultText)
+        practiceStatsText = findViewById(R.id.practiceStatsText)
+        practiceStartButton = findViewById(R.id.practiceStartButton)
+        practiceStopButton = findViewById(R.id.practiceStopButton)
 
         // Load unit preference early (unit toggle is in menu only).
         unitMode = loadUnitPref()
@@ -380,12 +396,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             ngShakeExecuted = false
             hasEverBeenOkSinceStart = false
             showNgHint(false)
-            val tm =
-                when (prefs().getString(KEY_MEASUREMENT_TARGET_MODE, "cup_standard") ?: "cup_standard") {
-                    "ball_on_floor" -> MeasurementFinalizationPolicy.TargetMode.BALL_ON_FLOOR
-                    else -> MeasurementFinalizationPolicy.TargetMode.CUP_STANDARD
-                }
-            MeasurementFinalizationPolicy.beginSession(tm)
             pendingEngineEvents.add(V31StateMachine.UiEvent.StartPressed)
         }
         btnFinish.setOnClickListener {
@@ -393,6 +403,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             pendingEngineEvents.add(V31StateMachine.UiEvent.FinishPressed)
         }
         btnResultData.setOnClickListener { openGraphicResultScreen() }
+        practiceStartButton.setOnClickListener {
+            val currentDistance = latestStableDistanceMeters ?: return@setOnClickListener
+            startPracticeFromCurrentDistance(currentDistance)
+        }
+        practiceStopButton.setOnClickListener { stopPracticeMode() }
         layoutResetTouch.setOnClickListener {
             // quick tap feedback: subtle scale-down then restore
             it.animate().cancel()
@@ -406,7 +421,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                     it.animate().scaleX(1f).scaleY(1f).setDuration(60L).start()
                 }
                 .start()
-            MeasurementFinalizationPolicy.endSession()
             pendingEngineEvents.add(V31StateMachine.UiEvent.ResetPressed)
         }
         btnSettings.setOnClickListener { showSettingsBottomSheet() }
@@ -456,6 +470,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         layoutZoomButtons.visibility = View.GONE
         backgroundRenderer.setZoomLevel(1.0f)
         applyZoom()
+        renderPracticeUi()
     }
 
     private fun showCheckFeedback() {
@@ -655,6 +670,78 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
         )
         return sb
+    }
+
+    private fun startPracticeFromCurrentDistance(distanceMeters: Float) {
+        practiceModeController.startPractice(
+            targetDistanceMeters = distanceMeters,
+            toleranceMeters = 0.2f
+        )
+        renderPracticeUi()
+    }
+
+    private fun stopPracticeMode() {
+        practiceModeController.stopPractice()
+        renderPracticeUi()
+    }
+
+    private fun onDistanceMeasured(finalDistanceMeters: Float) {
+        latestStableDistanceMeters = finalDistanceMeters
+        if (practiceModeController.isActive()) {
+            practiceModeController.recordMeasurement(finalDistanceMeters)
+        }
+        renderPracticeUi()
+    }
+
+    private fun formatPracticeMeters(value: Float?): String {
+        if (value == null || !value.isFinite()) return "--"
+        return String.format(Locale.US, "%.1fm", value)
+    }
+
+    private fun formatPracticeSignedMeters(value: Float?): String {
+        if (value == null || !value.isFinite()) return "--"
+        return String.format(Locale.US, "%+.1fm", value)
+    }
+
+    private fun buildPracticeVoiceMessage(errorMeters: Float?): String {
+        if (errorMeters == null) return "측정되지 않았습니다"
+        val absError = kotlin.math.abs(errorMeters)
+        return when {
+            absError <= 0.2f -> "정확합니다"
+            errorMeters > 0f -> "플러스 ${String.format(Locale.US, "%.1f", absError)} 미터"
+            else -> "마이너스 ${String.format(Locale.US, "%.1f", absError)} 미터"
+        }
+    }
+
+    private fun renderPracticeUi() {
+        val ui = practiceModeController.buildUiModel()
+        val hasCurrentStableDistance = latestStableDistanceMeters != null
+        if (ui.modeState == PracticeModeState.OFF && !hasCurrentStableDistance) {
+            practicePanel.visibility = View.GONE
+            return
+        }
+
+        practicePanel.visibility = View.VISIBLE
+        practiceStartButton.visibility = if (ui.modeState == PracticeModeState.OFF) View.VISIBLE else View.GONE
+        practiceStopButton.visibility = if (ui.modeState == PracticeModeState.ACTIVE) View.VISIBLE else View.GONE
+        practiceStartButton.isEnabled = hasCurrentStableDistance
+
+        if (ui.modeState == PracticeModeState.OFF) {
+            practiceTargetText.text = getString(R.string.practice_target_format, formatPracticeMeters(latestStableDistanceMeters))
+            practiceCurrentText.text = getString(R.string.practice_current_placeholder)
+            practiceErrorText.text = getString(R.string.practice_error_placeholder)
+            practiceResultText.text = getString(R.string.practice_ready)
+            practiceStatsText.text = getString(R.string.practice_stats_placeholder)
+            return
+        }
+
+        practiceTargetText.text = getString(R.string.practice_target_format, formatPracticeMeters(ui.targetDistanceMeters))
+        practiceCurrentText.text = getString(R.string.practice_current_format, formatPracticeMeters(ui.currentDistanceMeters))
+        practiceErrorText.text = getString(R.string.practice_error_format, formatPracticeSignedMeters(ui.errorMeters))
+        practiceResultText.text = if (ui.isSuccess) getString(R.string.practice_success) else getString(R.string.practice_retry)
+        practiceStatsText.text = getString(R.string.practice_stats_format, ui.successCount, ui.attemptCount)
+
+        val _voicePreview = buildPracticeVoiceMessage(ui.errorMeters)
     }
 
     /** 내부 테스트용 Slope Debug 텍스트 (요약→상태→원시값→진단→고급) */
@@ -936,14 +1023,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
 
         val conf =
             when (graphicSource) {
-                "SHARED", "SHARED_RAW", "SHARED_P3", "SHARED_P3_FALLBACK" ->
+                "SHARED", "SHARED_RAW" ->
                     when (ui.sharedP3Log?.quality) {
                         "GOOD" -> 1f
                         "DEGRADED" -> 0.7f
                         "BLOCKED" -> 0f
                         else -> 0.85f
                     }
-                "PHASE1", "PHASE1_FALLBACK" -> {
+                "PHASE1" -> {
                     val drift = phase1?.planeDriftDeg ?: ui.ballCupPlaneAngleDeg ?: 0f
                     if (drift.isFinite()) {
                         (1f - (drift / 5f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
@@ -951,12 +1038,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                         0.5f
                     }
                 }
-                "EXPERIMENTAL" ->
-                    if (MeasurementFinalizationPolicy.EXPERIMENTAL_SLOPE_SHADOW_ONLY) {
-                        0.3f
-                    } else {
-                        0.85f
-                    }
                 else -> {
                     val drift = ui.ballCupPlaneAngleDeg
                     if (drift != null && drift.isFinite()) {
@@ -1455,7 +1536,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
         if (proForceResetOnResume) {
             proForceResetOnResume = false
-            MeasurementFinalizationPolicy.endSession()
             pendingEngineEvents.add(V31StateMachine.UiEvent.ResetPressed)
         }
     }
@@ -1478,7 +1558,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
     }
 
     override fun onDestroy() {
-        runCatching { MeasurementFinalizationPolicy.endSession() }
         super.onDestroy()
         stopTrackingUiUpdate()
         previewGlView?.let {
@@ -1741,6 +1820,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         if (ui.engineState == V31StateMachine.State.RESULT &&
             lastEngineState != V31StateMachine.State.RESULT
         ) {
+            onDistanceMeasured(ui.distanceMeters)
             val distExtras = buildDistanceExtras()
             DistanceFieldTestLog.emitLogcat(ui, distExtras)
             appendMeasurementLog(buildMeasurementLogJson(ui, distExtras))
@@ -1770,16 +1850,7 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
                 ui.engineState == V31StateMachine.State.END_LOCKED
 
         val decimals = if (isFinal) 2 else 1
-        val distPolicyUi =
-            if (isFinal) MeasurementFinalizationPolicy.distanceDecisionFromUi(ui) else null
-        val distanceHardRejected =
-            distPolicyUi?.status == MeasurementFinalizationPolicy.MetricStatus.REJECTED
-        txtDistance.text =
-            if (distanceHardRejected) {
-                getString(R.string.greeniq_distance_hard_rejected)
-            } else {
-                formatDistanceWithDecimals(ui.distanceMeters, decimals)
-            }
+        txtDistance.text = formatDistanceWithDecimals(ui.distanceMeters, decimals)
 
         // LIVE / FINAL label: always white, subtle
         txtDistanceLabel.setTextColor(Color.WHITE)
@@ -2605,38 +2676,10 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         }
     }
 
-    /** prefs에 저장된 필드 테스트 거리 라벨·정답(m). 정답이 비어 있으면 라벨에서 유도. */
-    private fun fieldTestDistanceGroupAndGroundTruthM(p: android.content.SharedPreferences): Pair<String, Double> {
-        val raw = p.getString(KEY_TEST_DISTANCE_GROUP, null)?.trim()?.takeIf { it.isNotEmpty() } ?: "3m"
-        val group =
-            when (raw) {
-                "2m" -> "3m"
-                "5m" -> "6m"
-                "10m" -> "9m"
-                else -> raw
-            }
-        var truth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, 0f).toDouble()
-        if (!truth.isFinite() || truth <= 0.0) {
-            truth =
-                when (group) {
-                    "3m" -> 3.0
-                    "6m" -> 6.0
-                    "9m" -> 9.0
-                    else ->
-                        when (raw) {
-                            "2m" -> 2.0
-                            "5m" -> 5.0
-                            "10m" -> 10.0
-                            else -> 0.0
-                        }
-                }
-        }
-        return group to truth
-    }
-
     private fun buildMeasurementLogJson(ui: V31StateMachine.UiModel, distExtras: DistanceFieldTestLog.ActivityExtras): String {
         val p = prefs()
-        val (distanceGroup, groundTruth) = fieldTestDistanceGroupAndGroundTruthM(p)
+        val distanceGroup = p.getString(KEY_TEST_DISTANCE_GROUP, "2m") ?: "2m"
+        val groundTruth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, 0f).toDouble()
         val light = p.getString(KEY_TEST_LIGHT, "SUNNY") ?: "SUNNY"
         val notes = p.getString(KEY_TEST_NOTES, "") ?: ""
         val testSessionIdLog =
@@ -2837,112 +2880,6 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         appendJsonFloatOrNull("multiRayEstimatedDistance_m", ui.multiRayEstimatedDistanceMeters)
         sb.append(',')
         appendJsonFloatOrNull("multiRayProjectedCupPx", ui.multiRayProjectedCupPx)
-        sb.append(',')
-        appendJsonIntOrNull("samplingPlanGrid", ui.samplingPlanGrid)
-        sb.append(',')
-        appendJsonFloatOrNull("samplingPlanHalfSpanPx", ui.samplingPlanHalfSpanPx)
-        sb.append(',')
-        appendJsonFloatOrNull("samplingPlanStepPx", ui.samplingPlanStepPx)
-        sb.append(',')
-        appendJsonIntOrNull("samplingPlanTemporalFrames", ui.samplingPlanTemporalFrames)
-        sb.append(',')
-        appendJsonStringOrNull("cupLockPrimaryReason", ui.cupLockPrimaryReason)
-        sb.append(',')
-        appendJsonStringOrNull("cupLockSecondaryReason", ui.cupLockSecondaryReason)
-        sb.append(',')
-        appendJsonStringOrNull("cupLockOutcome", ui.cupLockOutcome)
-        sb.append(',')
-        appendJsonFloatOrNull("cupSigmaMarginCm", ui.cupSigmaMarginCm)
-        sb.append(',')
-        appendJsonIntOrNull("cupMaxConsecutiveOkReached", ui.cupMaxConsecutiveOkReached)
-        sb.append(',')
-        appendJsonIntOrNull("cupConsecutiveRequired", ui.cupConsecutiveRequired)
-        sb.append(',')
-        sb.append("\"cupElapsedStabilizingMs\":").append(ui.cupElapsedStabilizingMs ?: "null").append(',')
-        appendJsonFloatOrNull("cupProjectedPxEnd", ui.cupProjectedPxEnd)
-        sb.append(',')
-        appendJsonIntOrNull("cupValidSampleCountEnd", ui.cupValidSampleCountEnd)
-        sb.append(',')
-        appendJsonBoolOrNull("cupSoftHoldTriggered", ui.cupSoftHoldTriggered)
-        sb.append(',')
-        appendJsonBoolOrNull("cupSoftLockTriggered", ui.cupSoftLockTriggered)
-        sb.append(',')
-        appendJsonStringOrNull("cupTrackingStateEnd", ui.cupTrackingStateEnd)
-        sb.append(',')
-        appendJsonBoolOrNull("cupFarModeHoldActive", ui.cupFarModeHoldActive)
-        sb.append(',')
-        appendJsonBoolOrNull("cupQualityGuardPassed", ui.cupQualityGuardPassed)
-        sb.append(',')
-        appendJsonBoolOrNull("cupLiveSnapshotAvailable", ui.cupLiveSnapshotAvailable)
-        sb.append(',')
-        appendJsonBoolOrNull("cupEligibleLiveCupWorldAvailable", ui.cupEligibleLiveCupWorldAvailable)
-        sb.append(',')
-        appendJsonStringOrNull("cupMode", ui.cupOffsetMode)
-        sb.append(',')
-        appendJsonIntOrNull("cupAnchorCandidateCount", ui.cupAnchorCandidateCount)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorBestVarianceCm", ui.cupAnchorBestVarianceCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorBestResidualCm", ui.cupAnchorBestResidualCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorBestNormalY", ui.cupAnchorBestNormalY)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorBestOffsetDistCm", ui.cupAnchorBestOffsetDistCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorPlaneResidualCm", ui.cupAnchorPlaneResidualCm)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorReprojectSuccess", ui.cupAnchorReprojectSuccess)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorFailureReason", ui.cupAnchorFailureReason)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorThrottleMode", ui.cupAnchorThrottleMode)
-        sb.append(',')
-        sb.append("\"cupAnchorThrottleAgeMs\":").append(ui.cupAnchorThrottleAgeMs ?: "null").append(',')
-        appendJsonBoolOrNull("cupAnchorCacheHit", ui.cupAnchorCacheHit)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorLastFailureReason", ui.cupAnchorLastFailureReason)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorCacheWasSuccess", ui.cupAnchorCacheWasSuccess)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorCameraMovedM", ui.cupAnchorCameraMovedM)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorCameraAngleMovedDeg", ui.cupAnchorCameraAngleMovedDeg)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorReprojectedAffectsDistance", ui.cupAnchorReprojectedAffectsDistance)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorReprojectedAffectsEndAnchor", ui.cupAnchorReprojectedAffectsEndAnchor)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorReprojectedAffectsExperimentalSurface", ui.cupAnchorReprojectedAffectsExperimentalSurface)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorDistanceFrameOfRef", ui.cupAnchorDistanceFrameOfRef)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorEndAnchorFrameOfRef", ui.cupAnchorEndAnchorFrameOfRef)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorExperimentalSurfaceFrameOfRef", ui.cupAnchorExperimentalSurfaceFrameOfRef)
-        sb.append(',')
-        appendJsonBoolOrNull("cupAnchorFrameOfRefMismatch", ui.cupAnchorFrameOfRefMismatch)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorFrameOfRefMismatchReason", ui.cupAnchorFrameOfRefMismatchReason)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorQualityProbeStatus", ui.cupAnchorQualityProbeStatus)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorQualityInvalidateReason", ui.cupAnchorQualityInvalidateReason)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorSelectedOffsetCm", ui.cupAnchorSelectedOffsetCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorSelectedOffsetScore", ui.cupAnchorSelectedOffsetScore)
-        sb.append(',')
-        appendJsonStringOrNull("cupAnchorSelectedOffsetRankReason", ui.cupAnchorSelectedOffsetRankReason)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorEligibleMinCm", ui.cupAnchorEligibleMinCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorEligibleMaxCm", ui.cupAnchorEligibleMaxCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupAnchorLegacyDeltaCm", ui.cupAnchorLegacyDeltaCm)
-        sb.append(',')
-        appendJsonFloatOrNull("cupSigmaUsedCm", ui.sigmaCurrentCmEnd)
-        sb.append(',')
-        appendJsonFloatOrNull("cupSigmaMaxCm", ui.sigmaThresholdCmEnd)
         sb.append("}")
         sb.append("},")
 
@@ -3049,16 +2986,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         sb.append("},")
 
         val distSnapForLine = DistanceFieldTestLog.feedbackSnapshot(ui, distExtras)
-        distSnapForLine.finalMeasurementSsot?.let { MeasurementFinalizationPolicy.logFinalSlopeAxes(it) }
         sb.append("\"distanceFinalSummary\":")
         DistanceFieldTestLog.appendDistanceFeedbackJson(sb, distSnapForLine, ::escJson)
-        sb.append(',')
-        sb.append("\"finalMeasurementSsot\":")
-        if (distSnapForLine.finalMeasurementSsot == null) {
-            sb.append("null")
-        } else {
-            MeasurementFinalizationPolicy.appendFinalMeasurementSsotJson(sb, distSnapForLine.finalMeasurementSsot, ::escJson)
-        }
         sb.append(',')
         sb.append("\"finalDistanceGuard\":")
         if (isResult) {
@@ -3713,11 +3642,8 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             }
 
         val p = prefs()
-        val (savedGroupResolved, savedTruthResolved) = fieldTestDistanceGroupAndGroundTruthM(p)
-        val savedGroup = p.getString(KEY_TEST_DISTANCE_GROUP, savedGroupResolved) ?: savedGroupResolved
-        val savedTruth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, savedTruthResolved.toFloat()).let { stored ->
-            if (stored.isFinite() && stored > 0f) stored else savedTruthResolved.toFloat()
-        }
+        val savedGroup = p.getString(KEY_TEST_DISTANCE_GROUP, "2m") ?: "2m"
+        val savedTruth = p.getFloat(KEY_TEST_GROUND_TRUTH_M, 0f)
         val savedLight = p.getString(KEY_TEST_LIGHT, "SUNNY") ?: "SUNNY"
         val savedNotes = p.getString(KEY_TEST_NOTES, "") ?: ""
         val savedSessionId = p.getString(KEY_TEST_SESSION_ID, "") ?: ""
@@ -3763,14 +3689,14 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
         root.addView(label("Distance group"))
         val groupDistance = android.widget.RadioGroup(this).apply { orientation = android.widget.RadioGroup.HORIZONTAL }
         fun rb(text: String) = android.widget.RadioButton(this).apply { id = View.generateViewId(); this.text = text; setTextColor(Color.WHITE) }
-        val rb3 = rb("3m")
-        val rb6 = rb("6m")
-        val rb9 = rb("9m")
-        groupDistance.addView(rb3); groupDistance.addView(rb6); groupDistance.addView(rb9)
+        val rb2 = rb("2m")
+        val rb5 = rb("5m")
+        val rb10 = rb("10m")
+        groupDistance.addView(rb2); groupDistance.addView(rb5); groupDistance.addView(rb10)
         when (savedGroup) {
-            "9m", "10m" -> groupDistance.check(rb9.id)
-            "6m", "5m" -> groupDistance.check(rb6.id)
-            else -> groupDistance.check(rb3.id)
+            "10m" -> groupDistance.check(rb10.id)
+            "5m" -> groupDistance.check(rb5.id)
+            else -> groupDistance.check(rb2.id)
         }
         root.addView(groupDistance)
 
@@ -3831,17 +3757,11 @@ class DistanceMeasurementActivity : AppCompatActivity(), GLSurfaceView.Renderer 
             setOnClickListener {
                 val dg =
                     when (groupDistance.checkedRadioButtonId) {
-                        rb9.id -> "9m"
-                        rb6.id -> "6m"
-                        else -> "3m"
+                        rb10.id -> "10m"
+                        rb5.id -> "5m"
+                        else -> "2m"
                     }
-                val truth =
-                    editTruth.text.toString().trim().toFloatOrNull()?.takeIf { it > 0f }
-                        ?: when (dg) {
-                            "9m" -> 9f
-                            "6m" -> 6f
-                            else -> 3f
-                        }
+                val truth = editTruth.text.toString().trim().toFloatOrNull() ?: 0f
                 val light =
                     when (groupLight.checkedRadioButtonId) {
                         rbShade.id -> "SHADE"

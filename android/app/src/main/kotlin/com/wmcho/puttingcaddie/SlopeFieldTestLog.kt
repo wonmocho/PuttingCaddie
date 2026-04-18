@@ -60,7 +60,9 @@ object SlopeFieldTestLog {
         val sharedSampleSpreadCupM: Float?,
         /** 정책상 Phase1·Experimental은 제품 상하 후보에서 제외 */
         val phase1UsableForProduct: Boolean,
-        val experimentalUsableForProduct: Boolean
+        val experimentalUsableForProduct: Boolean,
+        /** EXPERIMENTAL | SHARED_P3_FALLBACK | PHASE1_FALLBACK | SHARED | SHARED_RAW | NONE */
+        val finalSlopeSourcePolicy: String
     )
 
     /**
@@ -175,8 +177,9 @@ object SlopeFieldTestLog {
             sharedFinalResidualM = log?.finalResidualM,
             sharedProjectedCupPx = ui.multiRayProjectedCupPx,
             sharedSampleSpreadCupM = spreadM,
-            phase1UsableForProduct = false,
-            experimentalUsableForProduct = false
+            phase1UsableForProduct = gr.source == "PHASE1_FALLBACK",
+            experimentalUsableForProduct = gr.source == "EXPERIMENTAL",
+            finalSlopeSourcePolicy = gr.source
         )
     }
 
@@ -246,12 +249,16 @@ object SlopeFieldTestLog {
         sb.append("\"sharedProjectedCupPx\":").append(num(snap.sharedProjectedCupPx)).append(',')
         sb.append("\"sharedSampleSpreadCupM\":").append(num(snap.sharedSampleSpreadCupM)).append(',')
         sb.append("\"phase1UsableForProduct\":").append(snap.phase1UsableForProduct).append(',')
-        sb.append("\"experimentalUsableForProduct\":").append(snap.experimentalUsableForProduct)
+        sb.append("\"experimentalUsableForProduct\":").append(snap.experimentalUsableForProduct).append(',')
+        sb.append("\"finalSlopeSourcePolicy\":\"").append(esc(snap.finalSlopeSourcePolicy)).append('"')
         sb.append('}')
     }
 
     data class GraphicResolution(
-        /** SHARED | SHARED_RAW | PHASE1 | NONE — 상하(forward) 표시용 최종 소스 */
+        /**
+         * EXPERIMENTAL | SHARED_P3_FALLBACK | PHASE1_FALLBACK | SHARED | SHARED_RAW | NONE
+         * — 상하(forward) 표시용 최종 소스(필드 테스트 JSON `finalForwardSource` / `finalSlopeSourcePolicy`와 정합).
+         */
         val source: String,
         val finalSlopeAvailable: Boolean,
         val forwardPct: Float?,
@@ -259,67 +266,92 @@ object SlopeFieldTestLog {
         val lateralPct: Float?,
         val vMeters: Float?,
         val hMeters: Float,
-        /** [UpDownSlopeProductGate] — 차단 시 상하 미표시 (거리와 무관) */
+        /** 제품 게이트 차단 사유(레거시 SharedP3-only 경로). 폴백 채택 시 null. */
         val productGateReason: String? = null
     )
 
     /**
-     * 상하경사 우선 정책: forward만 있으면 표시 가능. lateral 부재·불안정은 전체 실패로 보지 않음.
-     * 제품 소스: SharedP3만 ([UpDownSlopeProductGate]). Phase1·Experimental은 최종 후보에서 제외.
-     * 우선순위: Shared 안정 출력 → Shared raw (게이트 통과 시에만).
+     * 상하경사: [MeasurementFinalizationPolicy.chooseFinalForwardSlope] SSOT → 레거시 Shared 게이트 salvage.
+     * SharedP3 제품 임계 통과 시 Phase1으로 덮어쓰지 않음.
      */
     fun resolveGraphic(ui: V31StateMachine.UiModel): GraphicResolution {
-        val shared = ui.experimentalSharedSlope
+        val sharedSlope = ui.experimentalSharedSlope
         val phase1 = ui.slopeDebugInfo
         val log = ui.sharedP3Log
+        val experimental = ui.slopeExperimentalResult
         val hv = ui.horizontalVerticalMeters
         val rawM = ui.distanceMeters.takeIf { it.isFinite() && it > 0f } ?: 0f
         val projectedCupPx = ui.multiRayProjectedCupPx
-        val sampleSpreadCupM = ui.slopeExperimentalResult?.experimentalDiagnostics?.sampleSpreadCupM
+        val sampleSpreadCupM = experimental?.experimentalDiagnostics?.sampleSpreadCupM
 
         fun resolveH(sd: SlopeDebugInfo?): Float {
             val h = sd?.hMeters ?: hv?.first ?: rawM
             return if (h.isFinite() && h > 0f) h else rawM.coerceAtLeast(1e-4f)
         }
 
-        val productGateReason = UpDownSlopeProductGate.productGateReason(log, projectedCupPx, sampleSpreadCupM)
-        val sharedP3Ok = productGateReason == null
+        val dec = MeasurementFinalizationPolicy.chooseFinalForwardSlope(ui)
+        var forwardPct: Float?
+        var sourceTag: String
+        var productGateReason: String?
+        var lateralPct: Float?
 
-        val forwardPct: Float?
-        val sourceTag: String
-        when {
-            sharedP3Ok &&
-                shared != null && shared.blockedReason.isNullOrBlank() && shared.quality == "valid" &&
-                shared.forwardPct != null -> {
-                forwardPct = shared.forwardPct
-                sourceTag = "SHARED"
-            }
-            sharedP3Ok &&
-                log?.finalForwardPctRaw != null && log.finalForwardPctRaw.isFinite() -> {
-                forwardPct = log.finalForwardPctRaw
-                sourceTag = "SHARED_RAW"
-            }
-            else -> {
-                forwardPct = null
-                sourceTag = "NONE"
+        if (dec.status == MeasurementFinalizationPolicy.MetricStatus.VALID && dec.forwardPct != null) {
+            forwardPct = dec.forwardPct
+            sourceTag =
+                when (dec.source) {
+                    MeasurementFinalizationPolicy.SlopeSource.SHARED_P3 ->
+                        if (dec.qualityLabel == "MEDIUM") "SHARED_P3_FALLBACK" else "SHARED_P3"
+                    MeasurementFinalizationPolicy.SlopeSource.EXPERIMENTAL -> "EXPERIMENTAL"
+                    MeasurementFinalizationPolicy.SlopeSource.PHASE1 -> "PHASE1_FALLBACK"
+                    null -> "NONE"
+                }
+            productGateReason = null
+            lateralPct =
+                if (dec.source == MeasurementFinalizationPolicy.SlopeSource.SHARED_P3) {
+                    sharedSlope?.lateralPct?.takeIf {
+                        sharedSlope.blockedReason.isNullOrBlank() && sharedSlope.quality == "valid"
+                    }
+                } else {
+                    null
+                }
+        } else {
+            val gateReason = UpDownSlopeProductGate.productGateReason(log, projectedCupPx, sampleSpreadCupM)
+            val sharedP3Ok = gateReason == null
+            when {
+                sharedP3Ok &&
+                    sharedSlope != null &&
+                    sharedSlope.blockedReason.isNullOrBlank() &&
+                    sharedSlope.quality == "valid" &&
+                    sharedSlope.forwardPct != null -> {
+                    forwardPct = sharedSlope.forwardPct
+                    sourceTag = "SHARED"
+                    productGateReason = null
+                    lateralPct = sharedSlope.lateralPct
+                }
+                sharedP3Ok &&
+                    log?.finalForwardPctRaw != null &&
+                    log.finalForwardPctRaw.isFinite() -> {
+                    forwardPct = log.finalForwardPctRaw
+                    sourceTag = "SHARED_RAW"
+                    productGateReason = null
+                    lateralPct = null
+                }
+                else -> {
+                    forwardPct = null
+                    sourceTag = "NONE"
+                    productGateReason = gateReason
+                    lateralPct = null
+                }
             }
         }
 
         val h =
             when {
-                shared != null -> resolveH(shared)
+                sharedSlope != null -> resolveH(sharedSlope)
                 phase1 != null -> resolveH(phase1)
                 else -> rawM.coerceAtLeast(1e-4f)
             }
         val vMeters = forwardPct?.let { (it / 100f) * h }
-
-        val lateralPct: Float? =
-            when {
-                sharedP3Ok &&
-                    shared != null && shared.blockedReason.isNullOrBlank() && shared.quality == "valid" &&
-                    shared.lateralPct != null -> shared.lateralPct
-                else -> null
-            }
 
         return GraphicResolution(
             source = sourceTag,
@@ -414,9 +446,14 @@ object SlopeFieldTestLog {
         val exp = ui.slopeExperimentalResult
         if (exp?.quality == "rejected") {
             val rr = exp.rejectReason ?: ""
-            when {
-                rr.contains("drift") -> return "NO_SLOPE_EXPERIMENTAL_DRIFT_REJECT" to "surface_mismatch"
-                rr.contains("spread") -> return "NO_SLOPE_EXPERIMENTAL_SPREAD_REJECT" to "shared_sampling_issue"
+            val dm = ui.distanceMeters.takeIf { it.isFinite() && it > 0f } ?: 0f
+            val logOk = MeasurementFinalizationPolicy.sharedP3LogUsableForExperimentalFallback(ui.sharedP3Log, dm)
+            val eligible = MeasurementFinalizationPolicy.experimentalRejectEligibleForSharedP3(rr)
+            if (!(eligible && logOk)) {
+                when {
+                    rr.contains("drift") -> return "NO_SLOPE_EXPERIMENTAL_DRIFT_REJECT" to "surface_mismatch"
+                    rr.contains("spread") -> return "NO_SLOPE_EXPERIMENTAL_SPREAD_REJECT" to "shared_sampling_issue"
+                }
             }
         }
 

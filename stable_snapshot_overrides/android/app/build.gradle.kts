@@ -13,12 +13,14 @@ plugins {
  * android/key.properties 사용
  */
 val keystoreProperties = Properties()
-val keystorePropertiesFile = rootProject.file("key.properties")
-if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
-} else {
-    error("key.properties file not found")
-}
+val keystorePropertiesFile =
+    sequenceOf(
+        rootProject.file("key.properties"),
+        rootProject.file("../../PuttingCaddyPlus/android/key.properties"),
+        rootProject.file("../../android/key.properties")
+    ).firstOrNull { it.exists() }
+        ?: error("key.properties not found (copy to this android/ or keep sibling PuttingCaddyPlus/android/key.properties)")
+keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 
 android {
     namespace = "com.wmcho.puttingcaddie"
@@ -35,8 +37,8 @@ android {
     }
 
     defaultConfig {
-        /** Play Store·기기: 연구/실험판 — 안정판 `com.wmcho.puttingcaddy`와 동시 설치 */
-        applicationId = "com.wmcho.puttingcaddyplus"
+        /** 2026-04-03 안정 스냅샷(커밋 3e10423) — PuttingCaddy+ 와 동시 설치 */
+        applicationId = "com.wmcho.puttingcaddy"
 
         // ARCore + Play 안정성 고려
         minSdk = 24
@@ -59,7 +61,9 @@ android {
             val keyPasswordValue =
                 keystoreProperties["keyPassword"] ?: error("keyPassword not found in key.properties")
 
-            val keystoreFile = rootProject.file(storeFilePath.toString())
+            // storeFile in key.properties is relative to the directory that contains key.properties
+            val keystoreDir = keystorePropertiesFile.parentFile ?: rootProject.projectDir
+            val keystoreFile = File(keystoreDir, storeFilePath.toString()).canonicalFile
             if (!keystoreFile.exists()) {
                 error("Keystore file not found: ${keystoreFile.path}")
             }
@@ -97,8 +101,6 @@ flutter {
 }
 
 dependencies {
-    testImplementation("junit:junit:4.13.2")
-
     // ARCore (16KB page size 호환)
     implementation("com.google.ar:core:1.52.0")
 

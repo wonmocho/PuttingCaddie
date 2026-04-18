@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PuttingCaddy+</string>
+    <string name="app_name">PuttingCaddy</string>
 
     <!-- Header -->
-    <string name="title_distance">PuttingCaddy+</string>
+    <string name="title_distance">PuttingCaddy</string>
     <string name="greeniq_subtitle_ready">Ready on Green</string>
     <string name="greeniq_label_live">LIVE</string>
     <string name="greeniq_label_final">FINAL</string>
-    <string name="greeniq_distance_hard_rejected">RETAKE</string>
     <!-- Golf hints (English locale) -->
     <string name="greeniq_hint_ball">Align ball in center and tap BALL</string>
     <string name="greeniq_hint_cup">Align the cup in the center target ring and tap CUP.\nIf the cup looks small, move toward it and tap again.</string>
@@ -130,6 +129,20 @@
     <string name="btn_measurement_data">측정data</string>
     <string name="title_measurement_data">측정 데이터</string>
     <string name="btn_reset">RESET</string>
+    <string name="practice_title">Distance Practice</string>
+    <string name="practice_start">Practice this distance</string>
+    <string name="practice_stop">Stop practice</string>
+    <string name="practice_target_placeholder">Target: --</string>
+    <string name="practice_current_placeholder">Current: --</string>
+    <string name="practice_error_placeholder">Error: --</string>
+    <string name="practice_stats_placeholder">Success 0 / 0</string>
+    <string name="practice_ready">Press start to begin practice</string>
+    <string name="practice_success">Accurate</string>
+    <string name="practice_retry">Try again</string>
+    <string name="practice_target_format">Target: %1$s</string>
+    <string name="practice_current_format">Current: %1$s</string>
+    <string name="practice_error_format">Error: %1$s</string>
+    <string name="practice_stats_format">Success %1$d / %2$d</string>
 
     <!-- Distance formats -->
     <string name="distance_format">%1$.2f %2$s</string>
