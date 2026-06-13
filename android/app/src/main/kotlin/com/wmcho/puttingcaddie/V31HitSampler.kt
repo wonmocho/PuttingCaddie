@@ -1,0 +1,837 @@
+package com.wmcho.puttingcaddie
+
+import android.graphics.PointF
+import android.opengl.Matrix
+import android.util.Log
+import android.graphics.RectF
+import com.google.ar.core.Coordinates2d
+import com.google.ar.core.Frame
+import com.google.ar.core.HitResult
+import com.google.ar.core.InstantPlacementPoint
+import com.google.ar.core.Plane
+import com.google.ar.core.Point
+import com.google.ar.core.Pose
+import kotlin.math.abs
+import kotlin.math.min
+import kotlin.math.max
+import kotlin.math.sqrt
+
+class V31HitSampler(private val mapper: ScreenToViewMapper) {
+    enum class HitType { PLANE, DEPTH, POINT, NONE }
+    private val BALL_GRID_STEP_PX = 6f
+
+    data class Sample(
+        val bestHit: HitResult?,
+        val hitType: HitType,
+        val validHits: Int,
+        val totalPoints: Int,
+        // Optional diagnostics (used by GREENIQ Cup multi-ray)
+        val gridHalfSpanPx: Float? = null,
+        val gridStepPx: Float? = null,
+        val hitDistanceAvgMeters: Float? = null,
+        val hitDistanceMaxMeters: Float? = null,
+        val cameraY: Float? = null,
+        val medianY: Float? = null,
+        val centerYOffsetApplied: Boolean? = null,
+        // Optional diagnostics (distance-adaptive grid)
+        val gridPlan: String? = null,
+        val gridEstimatedDistanceMeters: Float? = null,
+        val gridProjectedCupPx: Float? = null,
+        val centerFallbackUsed: Boolean? = null,
+        /** FAR precision boost: logical grid size (3 or 5). */
+        val samplingPlanGrid: Int? = null,
+        /** Policy label: intended temporal depth for logging (multi-tick merge는 후속). */
+        val samplingPlanTemporalFrames: Int? = null,
+        // BALL only (gridCount==9): rejection reason when bestHit is null
+        val ballSampleRejectionReason: String? = null
+    )
+
+    private data class Candidate(
+        val hit: HitResult,
+        val type: HitType,
+        val distToRoiCenter: Float
+    )
+
+    private data class PlanePolicy(
+        val maxDistanceMeters: Float,
+        val preferUpwardFacing: Boolean,
+        val requireUpwardFacing: Boolean,
+        // If true: allow plane hits even when hitPose is outside polygon.
+        val allowOutsidePolygon: Boolean = false,
+        // If set: reject hits with hitY > (cameraY - yBelowCameraMeters)
+        val yBelowCameraMeters: Float? = null,
+        // If true: pick FARTHEST hit (for ball-to-cup when camera is behind ball).
+        // Default false: pick closest (standard hitTest behavior).
+        val preferFarthestForDistance: Boolean = false
+    )
+
+    private data class SelectedHit(
+        val hit: HitResult,
+        val pose: Pose,
+        val hitDistanceMeters: Float
+    )
+
+    /**
+     * Precise screen(px) -> hitTest local(px) mapping (UV-adjusted).
+     * Returns null if view size is not ready.
+     */
+    private fun adjustedHitTestLocalPoint(frame: Frame, screenX: Float, screenY: Float): PointF? {
+        val glW = mapper.viewWidthPx().toFloat()
+        val glH = mapper.viewHeightPx().toFloat()
+        if (glW <= 1f || glH <= 1f) return null
+
+        val pLocalRaw = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocal = mapper.unzoomLocal(pLocalRaw)
+        val screenPts = floatArrayOf(
+            (pLocal.x / glW).coerceIn(0f, 1f),
+            (pLocal.y / glH).coerceIn(0f, 1f)
+        )
+
+        // VIEW_NORMALIZED -> TEXTURE_NORMALIZED
+        val uv = FloatArray(2)
+        frame.transformCoordinates2d(Coordinates2d.VIEW_NORMALIZED, screenPts, Coordinates2d.TEXTURE_NORMALIZED, uv)
+
+        // Apply user texture adjustment (same as BackgroundRenderer)
+        val (uu, vv) = UvAdjust.applyUv(mapper.rotationDeg, mapper.mirrorH, mapper.mirrorV, uv[0], uv[1])
+        uv[0] = uu
+        uv[1] = vv
+
+        // TEXTURE_NORMALIZED -> VIEW_NORMALIZED
+        val viewAdj = FloatArray(2)
+        frame.transformCoordinates2d(Coordinates2d.TEXTURE_NORMALIZED, uv, Coordinates2d.VIEW_NORMALIZED, viewAdj)
+
+        val xAdj = (viewAdj[0] * glW).coerceIn(0f, glW)
+        val yAdj = (viewAdj[1] * glH).coerceIn(0f, glH)
+        return PointF(xAdj, yAdj)
+    }
+
+    /**
+     * Screen(px) -> TEXTURE_NORMALIZED uv (with user UV adjust applied).
+     * Useful for building a camera ray via Camera.textureIntrinsics.
+     */
+    fun screenPointToAdjustedTextureUv(frame: Frame, screenX: Float, screenY: Float): PointF? {
+        val glW = mapper.viewWidthPx().toFloat()
+        val glH = mapper.viewHeightPx().toFloat()
+        if (glW <= 1f || glH <= 1f) return null
+
+        val pLocalRaw = mapper.screenToLocal(PointF(screenX, screenY))
+        val pLocal = mapper.unzoomLocal(pLocalRaw)
+        val screenPts = floatArrayOf(
+            (pLocal.x / glW).coerceIn(0f, 1f),
+            (pLocal.y / glH).coerceIn(0f, 1f)
+        )
+
+        // VIEW_NORMALIZED -> TEXTURE_NORMALIZED
+        val uv = FloatArray(2)
+        frame.transformCoordinates2d(Coordinates2d.VIEW_NORMALIZED, screenPts, Coordinates2d.TEXTURE_NORMALIZED, uv)
+
+        // Apply user texture adjustment (same as BackgroundRenderer)
+        val (uu, vv) = UvAdjust.applyUv(mapper.rotationDeg, mapper.mirrorH, mapper.mirrorV, uv[0], uv[1])
+        return PointF(uu, vv)
+    }
+
+    private fun selectBestPlaneHit(
+        results: List<HitResult>,
+        policy: PlanePolicy,
+        cameraY: Float
+    ): HitResult? {
+        var bestUpwardInside: HitResult? = null
+        var bestOtherInside: HitResult? = null
+        var bestUpwardOutside: HitResult? = null
+        var bestOtherOutside: HitResult? = null
+
+        for (r in results) {
+            val t = r.trackable
+            if (t is InstantPlacementPoint) continue
+            if (t !is Plane) continue
+            val inside = t.isPoseInPolygon(r.hitPose)
+            if (!inside && !policy.allowOutsidePolygon) continue
+            if (r.distance > policy.maxDistanceMeters) continue
+
+            val hitY = r.hitPose.ty()
+            val yBelow = policy.yBelowCameraMeters
+            if (yBelow != null) {
+                if (hitY > (cameraY - yBelow)) continue
+            }
+
+            val isUpward = t.type == Plane.Type.HORIZONTAL_UPWARD_FACING
+            if (policy.requireUpwardFacing && !isUpward) continue
+
+            if (isUpward) {
+                if (inside) {
+                    if (bestUpwardInside == null || (if (policy.preferFarthestForDistance) r.distance > bestUpwardInside!!.distance + 0.0001f else r.distance < bestUpwardInside!!.distance - 0.0001f)) bestUpwardInside = r
+                } else {
+                    if (bestUpwardOutside == null || (if (policy.preferFarthestForDistance) r.distance > bestUpwardOutside!!.distance + 0.0001f else r.distance < bestUpwardOutside!!.distance - 0.0001f)) bestUpwardOutside = r
+                }
+            } else {
+                if (inside) {
+                    if (bestOtherInside == null || (if (policy.preferFarthestForDistance) r.distance > bestOtherInside!!.distance + 0.0001f else r.distance < bestOtherInside!!.distance - 0.0001f)) bestOtherInside = r
+                } else {
+                    if (bestOtherOutside == null || (if (policy.preferFarthestForDistance) r.distance > bestOtherOutside!!.distance + 0.0001f else r.distance < bestOtherOutside!!.distance - 0.0001f)) bestOtherOutside = r
+                }
+            }
+        }
+
+        // Prefer inside-polygon hits. Only fall back to outside-polygon hits when necessary.
+        val bestUpward = bestUpwardInside ?: bestUpwardOutside
+        val bestOther = bestOtherInside ?: bestOtherOutside
+        return if (policy.preferUpwardFacing) (bestUpward ?: bestOther) else (bestOther ?: bestUpward)
+    }
+
+    /**
+     * Raw hitTest: returns closest hit (Plane/Point/DepthPoint) at screen point.
+     * Slope Input 2.0 LocalSurfaceFit용. 거리 엔진에는 영향 없음.
+     */
+    fun hitTestClosestAtScreenPoint(frame: Frame, screenX: Float, screenY: Float): HitResult? {
+        val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
+        val results = frame.hitTest(pAdj.x, pAdj.y) ?: return null
+        return results.minByOrNull { it.distance }
+    }
+
+    /**
+     * Slope v1: hit 선택 시 타입 우선순위 적용. DepthPoint > Point > Plane.
+     * 같은 타입 내에서는 가장 가까운 hit 선택.
+     */
+    fun hitTestWithTypePriority(frame: Frame, screenX: Float, screenY: Float): HitResult? {
+        val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
+        val results = frame.hitTest(pAdj.x, pAdj.y) ?: return null
+        return selectByTypePriority(results)
+    }
+
+    /**
+     * 월드 좌표를 view-local pixel 좌표로 투영. 카메라 뒤/뷰 밖이면 null.
+     * Slope v1: ball/cup anchor 위치 → hitTest용 screen center 계산.
+     */
+    fun projectWorldToViewPoint(frame: Frame, worldX: Float, worldY: Float, worldZ: Float): PointF? {
+        val w = mapper.viewWidthPx().toFloat()
+        val h = mapper.viewHeightPx().toFloat()
+        if (w <= 1f || h <= 1f) return null
+        val viewMat = FloatArray(16)
+        val projMat = FloatArray(16)
+        frame.camera.getViewMatrix(viewMat, 0)
+        frame.camera.getProjectionMatrix(projMat, 0, 0.1f, 100f)
+        val vpMat = FloatArray(16)
+        Matrix.multiplyMM(vpMat, 0, projMat, 0, viewMat, 0)
+        val pt = floatArrayOf(worldX, worldY, worldZ, 1f)
+        val out = FloatArray(4)
+        Matrix.multiplyMV(out, 0, vpMat, 0, pt, 0)
+        if (kotlin.math.abs(out[3]) < 1e-6f) return null
+        val ndcX = out[0] / out[3]
+        val ndcY = out[1] / out[3]
+        if (ndcX < -1f || ndcX > 1f || ndcY < -1f || ndcY > 1f) return null
+        val vx = (ndcX + 1f) / 2f * w
+        val vy = (1f - ndcY) / 2f * h
+        return PointF(vx, vy)
+    }
+
+    /**
+     * 월드 좌표를 screen(px) 좌표로 투영. Slope v1: hitTestClosestAtScreenPoint 입력용.
+     */
+    fun projectWorldToScreenPoint(frame: Frame, worldX: Float, worldY: Float, worldZ: Float): PointF? {
+        val viewPt = projectWorldToViewPoint(frame, worldX, worldY, worldZ) ?: return null
+        return mapper.viewLocalToScreen(viewPt)
+    }
+
+    private fun selectByTypePriority(results: List<HitResult>): HitResult? {
+        if (results.isEmpty()) return null
+        val valid = results.filter { it.trackable !is InstantPlacementPoint }
+        if (valid.isEmpty()) return null
+        val depth = valid.filter { isDepthTrackable(it.trackable) }
+        val point = valid.filter { it.trackable is Point }
+        val plane = valid.filter { it.trackable is Plane }
+        val bestDepth = depth.minByOrNull { it.distance }
+        val bestPoint = point.minByOrNull { it.distance }
+        val bestPlane = plane.minByOrNull { it.distance }
+        return bestDepth ?: bestPoint ?: bestPlane
+    }
+
+    /**
+     * Single-ray plane hit at a screen coordinate (GREENIQ LIVE "laser" mode).
+     *
+     * Representative hit selection rules:
+     * - Plane + isPoseInPolygon
+     * - Prefer HORIZONTAL_UPWARD_FACING
+     * - Distance cap
+     * - Optional Y filter (must be below camera)
+     * - By default: choose closest hit.distance. If preferFarthestForDistance:
+     *   choose farthest (for ball-to-cup when camera is behind ball).
+     */
+    fun hitTestBestPlaneAtScreenPoint(
+        frame: Frame,
+        screenX: Float,
+        screenY: Float,
+        maxDistanceMeters: Float,
+        preferUpwardFacing: Boolean,
+        allowOutsidePolygon: Boolean = false,
+        yBelowCameraMeters: Float? = null,
+        preferFarthestForDistance: Boolean = false
+    ): HitResult? {
+        val pAdj = adjustedHitTestLocalPoint(frame, screenX, screenY) ?: return null
+        val results = frame.hitTest(pAdj.x, pAdj.y)
+        val camY = frame.camera.pose.ty()
+        val policy =
+            PlanePolicy(
+                maxDistanceMeters = maxDistanceMeters,
+                preferUpwardFacing = preferUpwardFacing,
+                requireUpwardFacing = false,
+                allowOutsidePolygon = allowOutsidePolygon,
+                yBelowCameraMeters = yBelowCameraMeters,
+                preferFarthestForDistance = preferFarthestForDistance
+            )
+        return selectBestPlaneHit(results, policy, camY)
+    }
+
+    /**
+     * GREENIQ Cup multi-ray sampling (5x5 grid) with median-based representative hit selection.
+     *
+     * - Screen center is based on base ROI center, with an extra Y offset downwards (Cup only).
+     * - Sampling rect is centered at adjusted center with half-span = offsetPercent * viewSizePx.
+     * - Each ray contributes at most 1 representative Plane hit (policy-driven).
+     * - Representative hit returned is the valid hit whose pose is closest to the median (XYZ).
+     */
+    fun sampleCupPlaneMultiRay(
+        frame: Frame,
+        baseRoiScreen: RectF,
+        offsetPercent: Float,
+        centerYOffsetRatio: Float,
+        gridSize: Int = 5,
+        maxHitDistanceMeters: Float = 12f,
+        yBelowCameraMeters: Float = 0.1f,
+        preferUpwardFacing: Boolean = true,
+        requireUpwardFacing: Boolean = false,
+        forceFar5x5: Boolean = false,
+        /** null이면 median에 가장 가까운 히트; 지정 시 XZ로 [liveWorldAlignForHitPick]에 가장 가까운 plane 히트 선택 */
+        liveWorldAlignForHitPick: FloatArray? = null
+    ): Sample {
+        val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
+        val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: return Sample(null, HitType.NONE, 0, gridSize * gridSize)
+
+        val cx = baseRoiScreen.centerX()
+        val cy = baseRoiScreen.centerY() + (glH * centerYOffsetRatio)
+
+        // Distance-adaptive grid (0~10m). Goal: grid/span/step never collapses to 0.
+        data class Plan(val name: String, val gridX: Int, val gridY: Int, val spanRatio: Float)
+        val CUP_DIAMETER_M = 0.108f // 4.25in golf cup
+        val MIN_GRID_SPAN_PX = 12f
+        val MIN_STEP_PX = 1f
+
+        // 1) Estimate distance using a center plane hit (view-space coordinate, UV-adjusted).
+        val centerHit =
+            hitTestBestPlaneAtScreenPoint(
+                frame = frame,
+                screenX = cx,
+                screenY = cy,
+                maxDistanceMeters = maxHitDistanceMeters.coerceAtLeast(10f),
+                preferUpwardFacing = preferUpwardFacing,
+                // Distance estimate should not depend on plane polygon extent.
+                allowOutsidePolygon = true,
+                yBelowCameraMeters = yBelowCameraMeters
+            )
+        val dMeters = (centerHit?.distance ?: maxHitDistanceMeters).coerceIn(0.3f, 10f)
+
+        // 2) Compute projected cup size in view pixels (keep Float throughout).
+        // Fallback to view-percent span if intrinsics/dims are unavailable.
+        val intr = frame.camera.textureIntrinsics
+        val dims = intr.imageDimensions
+        val texW = dims.getOrNull(0)?.toFloat()?.takeIf { it > 1f }
+        val texH = dims.getOrNull(1)?.toFloat()?.takeIf { it > 1f }
+        val fxTex = intr.focalLength.getOrNull(0)?.takeIf { it > 1e-6f }
+        val fyTex = intr.focalLength.getOrNull(1)?.takeIf { it > 1e-6f }
+        val projectedCupPxView: Float? =
+            if (texW != null && texH != null && fxTex != null && fyTex != null) {
+                val fxView = fxTex * (glW / texW)
+                val fyView = fyTex * (glH / texH)
+                val fView = (fxView + fyView) * 0.5f
+                val px = (fView * CUP_DIAMETER_M) / dMeters
+                if (px.isFinite() && px > 0f) px else null
+            } else {
+                null
+            }
+
+        // 3) Mode selection by distance and explicit far expansion request.
+        // Policy: stop relying on ULTRA_LINE_5 alone; prefer spatial sampling in far range.
+        val farCupBoost =
+            !forceFar5x5 &&
+                (dMeters >= 6f ||
+                    (projectedCupPxView != null && projectedCupPxView.isFinite() && projectedCupPxView < 45f))
+        var samplingPlanTemporalFrames = 3
+        var forcedSpanPx: Float? = null
+        val plan =
+            when {
+                forceFar5x5 -> Plan("FAR_5x5", 5, 5, 0.65f)
+                dMeters < 1.0f -> Plan("NEAR_7x7", 7, 7, 0.80f)
+                dMeters < 3.0f -> Plan("MID_5x5", 5, 5, 0.70f)
+                farCupBoost &&
+                    projectedCupPxView != null &&
+                    projectedCupPxView.isFinite() &&
+                    projectedCupPxView < 30f -> {
+                    samplingPlanTemporalFrames = 6
+                    forcedSpanPx = 40f // (5-1) * 10px step target
+                    Plan("FAR_5x5_PX30", 5, 5, 0.60f)
+                }
+                farCupBoost &&
+                    projectedCupPxView != null &&
+                    projectedCupPxView.isFinite() &&
+                    projectedCupPxView < 45f -> {
+                    samplingPlanTemporalFrames = 4
+                    forcedSpanPx = 48f // (5-1) * 12px
+                    Plan("FAR_5x5_PX45", 5, 5, 0.60f)
+                }
+                farCupBoost -> {
+                    samplingPlanTemporalFrames = 3
+                    forcedSpanPx = 36f // (3-1) * 18px
+                    Plan("FAR_3x3_BOOST", 3, 3, 0.60f)
+                }
+                else -> Plan("FAR_3x3", 3, 3, 0.60f)
+            }
+
+        val maxSpanPx = (min(glW, glH) * 0.25f).coerceAtLeast(MIN_GRID_SPAN_PX)
+        val spanCandidate =
+            forcedSpanPx
+                ?: (projectedCupPxView?.let { it * plan.spanRatio })
+                ?: (2f * max(glW * offsetPercent, glH * offsetPercent))
+
+        val minSpanForStepX = if (plan.gridX <= 1) 0f else MIN_STEP_PX * (plan.gridX - 1).toFloat()
+        val minSpanForStepY = if (plan.gridY <= 1) 0f else MIN_STEP_PX * (plan.gridY - 1).toFloat()
+        val zoomLevel = currentZoomLevel()
+        val zoomedSmallProjected =
+            !ProductFlags.ZOOM_DISABLED &&
+                zoomLevel >= 2.9f &&
+                plan.name == "FAR_3x3" &&
+                projectedCupPxView != null &&
+                projectedCupPxView.isFinite() &&
+                projectedCupPxView < 30f
+        // In 3x + tiny projected cup, widen FAR_3x3 span to secure enough valid samples.
+        val minGridSpanPxDynamic = if (zoomedSmallProjected) 18f else MIN_GRID_SPAN_PX
+        val minSpanPx = max(minGridSpanPxDynamic, max(minSpanForStepX, minSpanForStepY))
+        val spanPx = spanCandidate.coerceIn(minSpanPx, maxSpanPx)
+
+        val gridHalfX = if (plan.gridX <= 1) 0f else (spanPx * 0.5f)
+        val gridHalfY = if (plan.gridY <= 1) 0f else (spanPx * 0.5f)
+        val stepX = if (plan.gridX <= 1) 0f else (spanPx / (plan.gridX - 1).toFloat()).coerceAtLeast(MIN_STEP_PX)
+        val stepY = if (plan.gridY <= 1) 0f else (spanPx / (plan.gridY - 1).toFloat()).coerceAtLeast(MIN_STEP_PX)
+        val gridHalf = max(gridHalfX, gridHalfY)
+        val stepPx = max(stepX, stepY)
+
+        val camY = frame.camera.pose.ty()
+        val allowOutsidePolygonForFar = (plan.gridX <= 3) // FAR_3x3 or ULTRA_LINE_5
+        val policy =
+            PlanePolicy(
+                maxDistanceMeters = maxHitDistanceMeters,
+                preferUpwardFacing = preferUpwardFacing,
+                requireUpwardFacing = requireUpwardFacing,
+                allowOutsidePolygon = allowOutsidePolygonForFar,
+                yBelowCameraMeters = yBelowCameraMeters
+            )
+
+        val total = plan.gridX * plan.gridY
+        val selected = ArrayList<SelectedHit>(total)
+        val distances = ArrayList<Float>(total)
+
+        // Build samples directly in screen coords, but execute hitTest at UV-adjusted local coords.
+        for (iy in 0 until plan.gridY) {
+            val yOffset = if (plan.gridY <= 1) 0f else (-gridHalfY + (iy.toFloat() * stepY))
+            val yScreen = cy + yOffset
+            for (ix in 0 until plan.gridX) {
+                val xOffset = if (plan.gridX <= 1) 0f else (-gridHalfX + (ix.toFloat() * stepX))
+                val xScreen = cx + xOffset
+
+                val pAdj = adjustedHitTestLocalPoint(frame, xScreen, yScreen) ?: continue
+                val results = frame.hitTest(pAdj.x, pAdj.y)
+                val hit = selectBestPlaneHit(results, policy, camY) ?: continue
+                val pose = hit.hitPose
+                selected.add(SelectedHit(hit = hit, pose = pose, hitDistanceMeters = hit.distance))
+                distances.add(hit.distance)
+            }
+        }
+
+        val valid = selected.size
+        if (valid <= 0) {
+            // Fallback: ensure "not 찍힘" is eliminated (at least a center hit if available).
+            val fallbackPlaneHit =
+                centerHit
+                    ?: hitTestBestPlaneAtScreenPoint(
+                        frame = frame,
+                        screenX = cx,
+                        screenY = cy,
+                        maxDistanceMeters = maxHitDistanceMeters.coerceAtLeast(25f),
+                        preferUpwardFacing = true,
+                        allowOutsidePolygon = true,
+                        yBelowCameraMeters = yBelowCameraMeters
+                    )
+            val fallbackHit =
+                if (fallbackPlaneHit != null) {
+                    fallbackPlaneHit
+                } else {
+                    val pAdj = adjustedHitTestLocalPoint(frame, cx, cy)
+                    if (pAdj != null) {
+                        val results = frame.hitTest(pAdj.x, pAdj.y)
+                        pickBestDepthOrPoint(results, maxHitDistanceMeters.coerceAtLeast(25f))
+                    } else {
+                        null
+                    }
+                }
+            val fallbackType =
+                when {
+                    fallbackHit == null -> HitType.NONE
+                    fallbackHit.trackable is Plane -> HitType.PLANE
+                    isDepthTrackable(fallbackHit.trackable) -> HitType.DEPTH
+                    fallbackHit.trackable is Point -> HitType.POINT
+                    else -> HitType.NONE
+                }
+            return Sample(
+                bestHit = fallbackHit,
+                hitType = fallbackType,
+                validHits = if (fallbackHit != null) 1 else 0,
+                totalPoints = total,
+                gridHalfSpanPx = gridHalf,
+                gridStepPx = stepPx,
+                hitDistanceAvgMeters = fallbackHit?.distance,
+                hitDistanceMaxMeters = fallbackHit?.distance,
+                cameraY = camY,
+                medianY = fallbackHit?.hitPose?.ty(),
+                centerYOffsetApplied = true,
+                gridPlan = plan.name,
+                gridEstimatedDistanceMeters = dMeters,
+                gridProjectedCupPx = projectedCupPxView,
+                centerFallbackUsed = (fallbackHit != null),
+                samplingPlanGrid = max(plan.gridX, plan.gridY),
+                samplingPlanTemporalFrames = samplingPlanTemporalFrames
+            )
+        }
+
+        fun median(values: List<Float>): Float {
+            val s = values.sorted()
+            val n = s.size
+            val mid = n / 2
+            return if (n % 2 == 1) s[mid] else (s[mid - 1] + s[mid]) / 2f
+        }
+
+        val xs = selected.map { it.pose.tx() }
+        val ys = selected.map { it.pose.ty() }
+        val zs = selected.map { it.pose.tz() }
+        val mx = median(xs)
+        val my = median(ys)
+        val mz = median(zs)
+
+        // Representative hit: LIVE 정렬 ref가 있으면 XZ로 가장 가까운 히트(Trackable·createAnchor 경로 유지), 없으면 median 근접.
+        val best: SelectedHit? =
+            if (liveWorldAlignForHitPick != null && liveWorldAlignForHitPick.size >= 3 && selected.isNotEmpty()) {
+                val lx = liveWorldAlignForHitPick[0]
+                val lz = liveWorldAlignForHitPick[2]
+                var pick: SelectedHit? = null
+                var bestXZ2 = Float.POSITIVE_INFINITY
+                for (s in selected) {
+                    val dx = s.pose.tx() - lx
+                    val dz = s.pose.tz() - lz
+                    val xz2 = dx * dx + dz * dz
+                    if (xz2 < bestXZ2) {
+                        bestXZ2 = xz2
+                        pick = s
+                    }
+                }
+                pick
+            } else {
+                var pick: SelectedHit? = null
+                var bestD2 = Float.POSITIVE_INFINITY
+                for (s in selected) {
+                    val dx = s.pose.tx() - mx
+                    val dy = s.pose.ty() - my
+                    val dz = s.pose.tz() - mz
+                    val d2 = dx * dx + dy * dy + dz * dz
+                    if (d2 < bestD2) {
+                        bestD2 = d2
+                        pick = s
+                    }
+                }
+                pick
+            }
+
+        val avgDist = distances.sum() / distances.size.toFloat()
+        val maxDist = distances.maxOrNull()
+
+        return Sample(
+            bestHit = best!!.hit,
+            hitType = HitType.PLANE,
+            validHits = valid,
+            totalPoints = total,
+            gridHalfSpanPx = gridHalf,
+            gridStepPx = stepPx,
+            hitDistanceAvgMeters = avgDist,
+            hitDistanceMaxMeters = maxDist,
+            cameraY = camY,
+            medianY = my,
+            centerYOffsetApplied = true,
+            gridPlan = plan.name,
+            gridEstimatedDistanceMeters = dMeters,
+            gridProjectedCupPx = projectedCupPxView,
+            centerFallbackUsed = false,
+            samplingPlanGrid = max(plan.gridX, plan.gridY),
+            samplingPlanTemporalFrames = samplingPlanTemporalFrames
+        )
+    }
+
+    fun sampleBestHit(frame: Frame, roiScreen: RectF, gridCount: Int): Sample {
+        val gridSize = when (gridCount) {
+            9 -> 3
+            25 -> 5
+            49 -> 7
+            else -> 3
+        }
+        val cx = roiScreen.centerX()
+        val cy = roiScreen.centerY()
+
+        val plane = ArrayList<Candidate>(gridCount)
+        val depth = ArrayList<Candidate>(gridCount)
+        val point = ArrayList<Candidate>(gridCount)
+        var planeValid = 0
+        var depthValid = 0
+        var pointValid = 0
+
+        // Collect sample points first (Ball robustness: 3x3 fixed patch for START).
+        val samplePoints = ArrayList<PointF>(gridSize * gridSize)
+        if (gridCount == 9) {
+            // 3x3 patch around center: less sensitive to user centering error.
+            for (iy in -1..1) {
+                for (ix in -1..1) {
+                    samplePoints.add(PointF(cx + (ix * BALL_GRID_STEP_PX), cy + (iy * BALL_GRID_STEP_PX)))
+                }
+            }
+        } else {
+            for (iy in 0 until gridSize) {
+                val ty = if (gridSize == 1) 0.5f else iy.toFloat() / (gridSize - 1).toFloat()
+                val yScreen = roiScreen.top + (ty * roiScreen.height())
+                for (ix in 0 until gridSize) {
+                    val tx = if (gridSize == 1) 0.5f else ix.toFloat() / (gridSize - 1).toFloat()
+                    val xScreen = roiScreen.left + (tx * roiScreen.width())
+                    samplePoints.add(PointF(xScreen, yScreen))
+                }
+            }
+        }
+
+        // Single transform batch.
+        val screenPts = FloatArray(samplePoints.size * 2)
+        var idxPt = 0
+
+        // Normalize by GLSurfaceView size (hitTest expects view pixel coords).
+        val glW = mapper.viewWidthPx().toFloat().takeIf { it > 1f } ?: 1f
+        val glH = mapper.viewHeightPx().toFloat().takeIf { it > 1f } ?: 1f
+
+        for (p in samplePoints) {
+            val pLocalRaw = mapper.screenToLocal(p)
+            val pLocal = mapper.unzoomLocal(pLocalRaw)
+            screenPts[idxPt++] = (pLocal.x / glW).coerceIn(0f, 1f)
+            screenPts[idxPt++] = (pLocal.y / glH).coerceIn(0f, 1f)
+        }
+
+        // 1) VIEW_NORMALIZED -> TEXTURE_NORMALIZED
+        val uv = FloatArray(screenPts.size)
+        frame.transformCoordinates2d(Coordinates2d.VIEW_NORMALIZED, screenPts, Coordinates2d.TEXTURE_NORMALIZED, uv)
+
+        // 2) Apply user texture adjustment (same as BackgroundRenderer)
+        val rot = mapper.rotationDeg
+        val mh = mapper.mirrorH
+        val mv = mapper.mirrorV
+        for (i in uv.indices step 2) {
+            val (uu, vv) = UvAdjust.applyUv(rot, mh, mv, uv[i], uv[i + 1])
+            uv[i] = uu
+            uv[i + 1] = vv
+        }
+
+        // 3) TEXTURE_NORMALIZED -> VIEW_NORMALIZED
+        val viewAdj = FloatArray(screenPts.size)
+        frame.transformCoordinates2d(Coordinates2d.TEXTURE_NORMALIZED, uv, Coordinates2d.VIEW_NORMALIZED, viewAdj)
+
+        // Now iterate points and do hitTest at adjusted view coords
+        var pointIndex = 0
+        var planeRejectedByPolygonCount = 0
+        for (pt in samplePoints) {
+                val xScreen = pt.x
+                val yScreen = pt.y
+
+                val xAdj = (viewAdj[pointIndex++] * glW).coerceIn(0f, glW)
+                val yAdj = (viewAdj[pointIndex++] * glH).coerceIn(0f, glH)
+
+                val results = frame.hitTest(xAdj, yAdj)
+                val distToCenter = abs(xScreen - cx) + abs(yScreen - cy)
+
+                // same point: pick best match by type priority
+                var chosen: HitResult? = null
+                var chosenType: HitType = HitType.NONE
+
+                for (r in results) {
+                    val t = r.trackable
+                    if (t is InstantPlacementPoint) continue
+                    if (t is Plane) {
+                        if (t.isPoseInPolygon(r.hitPose)) {
+                            chosen = r
+                            chosenType = HitType.PLANE
+                            break
+                        } else {
+                            planeRejectedByPolygonCount++
+                        }
+                    }
+                }
+
+                if (chosen == null) {
+                    for (r in results) {
+                        val t = r.trackable
+                        if (t is InstantPlacementPoint) continue
+                        if (t is Plane) continue
+                        if (isDepthTrackable(t)) {
+                            chosen = r
+                            chosenType = HitType.DEPTH
+                            break
+                        }
+                    }
+                }
+
+                if (chosen == null) {
+                    for (r in results) {
+                        val t = r.trackable
+                        if (t is InstantPlacementPoint) continue
+                        if (t is Plane) continue
+                        if (t is Point) {
+                            chosen = r
+                            chosenType = HitType.POINT
+                            break
+                        }
+                    }
+                }
+
+                if (chosen != null) {
+                    when (chosenType) {
+                        HitType.PLANE -> {
+                            planeValid++
+                            plane.add(Candidate(chosen, chosenType, distToCenter))
+                        }
+                        HitType.DEPTH -> {
+                            depthValid++
+                            depth.add(Candidate(chosen, chosenType, distToCenter))
+                        }
+                        HitType.POINT -> {
+                            pointValid++
+                            point.add(Candidate(chosen, chosenType, distToCenter))
+                        }
+                        else -> {}
+                    }
+                }
+        }
+
+        // BALL (gridCount==9): Prefer FARTHEST hit for all trackable types. When standing
+        // behind the ball (e.g. 3m back), plane may not be available and depth/point hits
+        // use median → wrong cluster (camera-facing). Farthest = intended target (ball).
+        val useFarthest = (gridCount == 9)
+        val bestPlane = if (useFarthest) pickBestByFarthestDistance(plane) else pickBestByMedianDistance(plane)
+        val bestDepth = if (useFarthest) pickBestByFarthestDistance(depth) else pickBestByMedianDistance(depth)
+        val bestPoint = if (useFarthest) pickBestByFarthestDistance(point) else pickBestByMedianDistance(point)
+
+        return when {
+            bestPlane != null -> Sample(bestPlane, HitType.PLANE, planeValid, samplePoints.size)
+            bestDepth != null -> Sample(bestDepth, HitType.DEPTH, depthValid, samplePoints.size)
+            bestPoint != null -> Sample(bestPoint, HitType.POINT, pointValid, samplePoints.size)
+            else -> {
+                val rejectionReason = if (planeRejectedByPolygonCount > 0) "planeOutsidePolygon" else "noHit"
+                if (gridCount == 9) {
+                    Log.d("BALL_SAMPLE_REJECT", "reason=$rejectionReason planeRejectedByPolygon=$planeRejectedByPolygonCount validHits=${max(planeValid, max(depthValid, pointValid))}")
+                }
+                Sample(null, HitType.NONE, max(planeValid, max(depthValid, pointValid)), samplePoints.size, ballSampleRejectionReason = rejectionReason)
+            }
+        }
+    }
+
+    /**
+     * For BALL locking: prefer the hit with the LARGEST distance (farthest from camera).
+     * When aiming at the ball from behind, the ball is the farthest target; closer hits
+     * are often floor/obstacles between camera and ball. Tie-break: closer to ROI center.
+     */
+    private fun pickBestByFarthestDistance(cands: List<Candidate>): HitResult? {
+        if (cands.isEmpty()) return null
+        var best: Candidate? = null
+        for (c in cands) {
+            if (best == null) {
+                best = c
+                continue
+            }
+            val bd = best!!.hit.distance
+            val cd = c.hit.distance
+            if (cd > bd + 0.0001f) {
+                best = c
+            } else if (abs(cd - bd) <= 0.0001f) {
+                if (c.distToRoiCenter < best!!.distToRoiCenter - 0.0001f) best = c
+            }
+        }
+        return best?.hit
+    }
+
+    private fun pickBestByMedianDistance(cands: List<Candidate>): HitResult? {
+        if (cands.isEmpty()) return null
+        val sortedDist = cands.map { it.hit.distance }.sorted()
+        val median =
+            if (sortedDist.size % 2 == 1) {
+                sortedDist[sortedDist.size / 2]
+            } else {
+                val i = sortedDist.size / 2
+                (sortedDist[i - 1] + sortedDist[i]) * 0.5f
+            }
+        var best: Candidate? = null
+        var bestDelta = Float.POSITIVE_INFINITY
+        for (c in cands) {
+            val delta = abs(c.hit.distance - median)
+            if (delta < bestDelta - 0.0001f) {
+                best = c
+                bestDelta = delta
+            } else if (abs(delta - bestDelta) <= 0.0001f) {
+                // Tie-breaker: closer to ROI center
+                if (best == null || c.distToRoiCenter < best!!.distToRoiCenter - 0.0001f) best = c
+            }
+        }
+        return best?.hit
+    }
+
+    private fun pickBest(cands: List<Candidate>): HitResult? {
+        if (cands.isEmpty()) return null
+        var best: Candidate? = null
+        for (c in cands) {
+            if (best == null) {
+                best = c
+                continue
+            }
+            val bd = best!!.distToRoiCenter
+            val cd = c.distToRoiCenter
+            if (cd < bd - 0.0001f) {
+                best = c
+            } else if (abs(cd - bd) <= 0.0001f) {
+                if (c.hit.distance < best!!.hit.distance - 0.0001f) {
+                    best = c
+                }
+            }
+        }
+        return best!!.hit
+    }
+
+    private fun pickBestDepthOrPoint(results: List<HitResult>, maxDistanceMeters: Float): HitResult? {
+        var bestDepth: HitResult? = null
+        var bestPoint: HitResult? = null
+        for (r in results) {
+            val t = r.trackable
+            if (t is InstantPlacementPoint) continue
+            if (r.distance > maxDistanceMeters) continue
+            if (isDepthTrackable(t)) {
+                if (bestDepth == null || r.distance < bestDepth!!.distance - 0.0001f) bestDepth = r
+            } else if (t is Point) {
+                if (bestPoint == null || r.distance < bestPoint!!.distance - 0.0001f) bestPoint = r
+            }
+        }
+        return bestDepth ?: bestPoint
+    }
+
+    private fun isDepthTrackable(trackable: Any): Boolean {
+        val name = trackable.javaClass.name
+        val simple = trackable.javaClass.simpleName
+        return name == "com.google.ar.core.DepthPoint" || simple == "DepthPoint"
+    }
+
+    fun currentZoomLevel(): Float = mapper.zoomLevel
+}
+

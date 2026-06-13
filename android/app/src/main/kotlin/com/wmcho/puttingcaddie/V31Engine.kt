@@ -1,0 +1,34 @@
+package com.wmcho.puttingcaddie
+
+import android.graphics.RectF
+import com.google.ar.core.Frame
+import com.google.ar.core.Session
+
+class V31Engine(mapper: ScreenToViewMapper, debugLoggingEnabled: Boolean = false) : MeasurementEngine {
+    private val sampler = V31HitSampler(mapper)
+    private val stats = PoseStatsMad()
+    private val sm = V31StateMachine(sampler, stats, debugLoggingEnabled = debugLoggingEnabled)
+
+    override fun setAxisMode(axisMode: V31StateMachine.AxisMode) {
+        sm.axisMode = axisMode
+    }
+
+    override fun onUiEvent(e: V31StateMachine.UiEvent, nowNs: Long) {
+        sm.onUiEvent(e, nowNs)
+    }
+
+    override fun onFrame(frame: Frame, roiScreen: RectF, nowNs: Long, session: Session): V31StateMachine.UiModel {
+        return sm.tick(frame, roiScreen, nowNs, session)
+    }
+
+    override fun reset() {
+        sm.onUiEvent(V31StateMachine.UiEvent.ResetPressed, System.nanoTime())
+    }
+
+    override fun setSlopeTestLogContext(sessionId: String?, repeatIndex: Int?, targetScenario: String?) {
+        sm.slopeTestSessionId = sessionId
+        sm.slopeRepeatIndex = repeatIndex
+        sm.slopeTargetScenario = targetScenario
+    }
+}
+
